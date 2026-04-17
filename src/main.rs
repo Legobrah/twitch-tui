@@ -278,9 +278,14 @@ fn handle_key(
             spawn_categories(auth, tx);
         }
         KeyCode::Char('f') => {
-            app.mode = AppMode::Followed;
-            app.reset_selection();
-            app.is_loading = true;
+            if auth.has_token() {
+                app.mode = AppMode::Followed;
+                app.reset_selection();
+                app.is_loading = true;
+                spawn_followed(auth, tx);
+            } else {
+                app.error_message = Some("OAuth required. Set token in ~/.config/twitch-tui/config.toml".to_string());
+            }
         }
         KeyCode::Char('/') => {
             app.mode = AppMode::Search {
@@ -498,4 +503,49 @@ fn connect_chat(
             let _ = tx.send(AppEvent::Error(format!("Chat connect error: {}", e)));
         }
     }
+}
+
+fn spawn_followed(auth: &twitch::auth::Auth, tx: &mpsc::UnboundedSender<AppEvent>) {
+    let auth = auth.clone();
+    let tx = tx.clone();
+    tokio::spawn(async move {
+        let api = twitch::api::TwitchApi::new(auth);
+        match api.get_current_user().await {
+            Ok(user) => match api.get_followed_channels(&user.id).await {
+                Ok(channels) => {
+                    // Fetch live status for followed
+                    let logins: Vec<String> = channels.iter().map(|c| c.name.clone()).collect();
+                    if !logins.is_empty() {
+                        match api.get_streams(&logins).await {
+                            Ok(live) => {
+                                let mut merged = channels;
+                                for ch in &mut merged {
+                                    if let Some(live_ch) = live.iter().find(|l| l.name == ch.name) {
+                                        ch.is_live = true;
+                                        ch.title = live_ch.title.clone();
+                                        ch.game_name = live_ch.game_name.clone();
+                                        ch.viewer_count = live_ch.viewer_count;
+                                        ch.started_at = live_ch.started_at.clone();
+                                    }
+                                }
+                                let _ = tx.send(AppEvent::ChannelsLoaded(merged));
+                            }
+                            Err(e) => {
+                                let _ = tx.send(AppEvent::Error(format!("Followed live check: {}", e)));
+                                let _ = tx.send(AppEvent::ChannelsLoaded(channels));
+                            }
+                        }
+                    } else {
+                        let _ = tx.send(AppEvent::ChannelsLoaded(channels));
+                    }
+                }
+                Err(e) => {
+                    let _ = tx.send(AppEvent::Error(format!("Followed error: {}", e)));
+                }
+            },
+            Err(e) => {
+                let _ = tx.send(AppEvent::Error(format!("User info error: {}", e)));
+            }
+        }
+    });
 }

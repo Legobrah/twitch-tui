@@ -293,6 +293,110 @@ impl TwitchApi {
             })
             .collect())
     }
+
+    pub async fn get_followed_channels(&self, user_id: &str) -> Result<Vec<Channel>, String> {
+        let headers = self.build_headers()?;
+        let url = format!(
+            "{}/channels/followed?user_id={}&first=100",
+            self.base_url, user_id
+        );
+
+        let resp = self
+            .client
+            .get(&url)
+            .headers(headers)
+            .send()
+            .await
+            .map_err(|e| format!("Network error: {}", e))?;
+
+        if !resp.status().is_success() {
+            return Err(format!("API error: {}", resp.status()));
+        }
+
+        #[derive(Deserialize)]
+        struct FollowedResponse {
+            data: Vec<FollowedData>,
+        }
+        #[derive(Deserialize)]
+        #[allow(dead_code)]
+        struct FollowedData {
+            broadcaster_id: String,
+            broadcaster_login: String,
+            broadcaster_name: String,
+        }
+
+        let data: FollowedResponse = resp
+            .json()
+            .await
+            .map_err(|e| format!("Parse error: {}", e))?;
+
+        Ok(data
+            .data
+            .into_iter()
+            .map(|f| Channel {
+                twitch_id: f.broadcaster_id,
+                name: f.broadcaster_login,
+                display_name: f.broadcaster_name,
+                is_live: false,
+                title: None,
+                game_name: None,
+                viewer_count: None,
+                started_at: None,
+                thumbnail_url: None,
+            })
+            .collect())
+    }
+
+    pub async fn get_current_user(&self) -> Result<UserInfo, String> {
+        let headers = self.build_headers()?;
+        let url = format!("{}/users", self.base_url);
+
+        let resp = self
+            .client
+            .get(&url)
+            .headers(headers)
+            .send()
+            .await
+            .map_err(|e| format!("Network error: {}", e))?;
+
+        if !resp.status().is_success() {
+            return Err(format!("API error: {}", resp.status()));
+        }
+
+        #[derive(Deserialize)]
+        struct UsersResponse {
+            data: Vec<UserData>,
+        }
+        #[derive(Deserialize)]
+        #[allow(dead_code)]
+        struct UserData {
+            id: String,
+            login: String,
+            display_name: String,
+        }
+
+        let data: UsersResponse = resp
+            .json()
+            .await
+            .map_err(|e| format!("Parse error: {}", e))?;
+
+        data.data
+            .into_iter()
+            .next()
+            .map(|u| UserInfo {
+                id: u.id,
+                login: u.login,
+                display_name: u.display_name,
+            })
+            .ok_or_else(|| "No user data returned".to_string())
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct UserInfo {
+    pub id: String,
+    pub login: String,
+    pub display_name: String,
 }
 
 #[cfg(test)]
