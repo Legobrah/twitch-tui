@@ -22,6 +22,9 @@ impl Auth {
     }
 
     pub fn open_auth_page(&self) -> Result<(), Box<dyn std::error::Error>> {
+        if !self.client_id.chars().all(|c| c.is_alphanumeric()) {
+            return Err("Invalid client ID".into());
+        }
         let scopes = "chat:read+chat:edit+user:read:follows";
         let url = format!(
             "https://id.twitch.tv/oauth2/authorize?response_type=token&client_id={}&redirect_uri=http://localhost&scope={}",

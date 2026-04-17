@@ -105,18 +105,18 @@ impl TwitchApi {
 
     pub async fn get_streams(&self, user_logins: &[String], after: Option<&str>) -> Result<(Vec<Channel>, Option<String>), String> {
         let headers = self.build_headers().map_err(|e| { error!("build_headers error: {}", e); e })?;
-        let params: Vec<String> = user_logins
+        let mut query: Vec<(&str, String)> = user_logins
             .iter()
-            .map(|l| format!("user_login={}", l))
+            .map(|l| ("user_login", l.clone()))
             .collect();
-        let mut url = format!("{}/streams?{}", self.base_url, params.join("&"));
         if let Some(cursor) = after {
-            url = format!("{}&after={}", url, cursor);
+            query.push(("after", cursor.to_string()));
         }
 
         let resp = self
             .client
-            .get(&url)
+            .get(format!("{}/streams", self.base_url))
+            .query(&query)
             .headers(headers)
             .send()
             .await
@@ -161,14 +161,15 @@ impl TwitchApi {
 
     pub async fn get_top_games(&self, first: u32, after: Option<&str>) -> Result<(Vec<Game>, Option<String>), String> {
         let headers = self.build_headers()?;
-        let mut url = format!("{}/games/top?first={}", self.base_url, first);
+        let mut query: Vec<(&str, String)> = vec![("first", first.to_string())];
         if let Some(cursor) = after {
-            url = format!("{}&after={}", url, cursor);
+            query.push(("after", cursor.to_string()));
         }
 
         let resp = self
             .client
-            .get(&url)
+            .get(format!("{}/games/top", self.base_url))
+            .query(&query)
             .headers(headers)
             .send()
             .await
@@ -199,17 +200,18 @@ impl TwitchApi {
         after: Option<&str>,
     ) -> Result<(Vec<Channel>, Option<String>), String> {
         let headers = self.build_headers()?;
-        let mut url = format!(
-            "{}/streams?game_id={}&first={}",
-            self.base_url, game_id, first
-        );
+        let mut query: Vec<(&str, String)> = vec![
+            ("game_id", game_id.to_string()),
+            ("first", first.to_string()),
+        ];
         if let Some(cursor) = after {
-            url = format!("{}&after={}", url, cursor);
+            query.push(("after", cursor.to_string()));
         }
 
         let resp = self
             .client
-            .get(&url)
+            .get(format!("{}/streams", self.base_url))
+            .query(&query)
             .headers(headers)
             .send()
             .await
@@ -250,14 +252,15 @@ impl TwitchApi {
         first: u32,
     ) -> Result<Vec<Channel>, String> {
         let headers = self.build_headers()?;
-        let url = format!(
-            "{}/search/channels?query={}&first={}",
-            self.base_url, query, first
-        );
+        let query_params: Vec<(&str, String)> = vec![
+            ("query", query.to_string()),
+            ("first", first.to_string()),
+        ];
 
         let resp = self
             .client
-            .get(&url)
+            .get(format!("{}/search/channels", self.base_url))
+            .query(&query_params)
             .headers(headers)
             .send()
             .await
@@ -288,17 +291,18 @@ impl TwitchApi {
 
     pub async fn get_vods(&self, user_id: &str, first: u32, after: Option<&str>) -> Result<(Vec<Vod>, Option<String>), String> {
         let headers = self.build_headers()?;
-        let mut url = format!(
-            "{}/videos?user_id={}&first={}",
-            self.base_url, user_id, first
-        );
+        let mut query: Vec<(&str, String)> = vec![
+            ("user_id", user_id.to_string()),
+            ("first", first.to_string()),
+        ];
         if let Some(cursor) = after {
-            url = format!("{}&after={}", url, cursor);
+            query.push(("after", cursor.to_string()));
         }
 
         let resp = self
             .client
-            .get(&url)
+            .get(format!("{}/videos", self.base_url))
+            .query(&query)
             .headers(headers)
             .send()
             .await
@@ -327,14 +331,15 @@ impl TwitchApi {
 
     pub async fn get_followed_channels(&self, user_id: &str) -> Result<Vec<Channel>, String> {
         let headers = self.build_headers()?;
-        let url = format!(
-            "{}/channels/followed?user_id={}&first=100",
-            self.base_url, user_id
-        );
+        let query: Vec<(&str, String)> = vec![
+            ("user_id", user_id.to_string()),
+            ("first", "100".to_string()),
+        ];
 
         let resp = self
             .client
-            .get(&url)
+            .get(format!("{}/channels/followed", self.base_url))
+            .query(&query)
             .headers(headers)
             .send()
             .await
@@ -381,11 +386,10 @@ impl TwitchApi {
 
     pub async fn get_current_user(&self) -> Result<UserInfo, String> {
         let headers = self.build_headers()?;
-        let url = format!("{}/users", self.base_url);
 
         let resp = self
             .client
-            .get(&url)
+            .get(format!("{}/users", self.base_url))
             .headers(headers)
             .send()
             .await
