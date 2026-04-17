@@ -1,6 +1,7 @@
 pub mod browse;
 pub mod chat;
 pub mod detail;
+pub mod format;
 pub mod help;
 pub mod theme;
 
