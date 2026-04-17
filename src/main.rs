@@ -11,7 +11,7 @@ use std::io;
 use std::time::Duration;
 
 use crossterm::{
-    event::{self, Event, KeyCode, KeyEvent},
+    event::{self, Event, KeyCode, KeyEvent, KeyEventKind},
     terminal::{EnterAlternateScreen, LeaveAlternateScreen},
 };
 use ratatui::{backend::CrosstermBackend, Terminal};
@@ -146,7 +146,9 @@ fn run_app(
 
         if crossterm::event::poll(Duration::from_millis(100))? {
             if let Event::Key(key) = event::read()? {
-                handle_key(key, app, db, config, auth, tx, &mut irc_client, &mut current_chat_channel);
+                if key.kind == KeyEventKind::Press {
+                    handle_key(key, app, db, config, auth, tx, &mut irc_client, &mut current_chat_channel);
+                }
             }
         }
 
