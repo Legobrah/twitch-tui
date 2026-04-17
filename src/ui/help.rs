@@ -8,20 +8,33 @@ use super::theme;
 
 pub fn render(f: &mut Frame, area: Rect) {
     let help_text = "\
-Tab/Shift+Tab  Switch pane
-j/k, Up/Down    Navigate list
-Enter           Watch stream
-s               Save/unsave channel
-/               Search channels
-c               Categories view
-v               VODs (selected channel)
-f               Followed channels
-r               Refresh
-Escape          Back to saved
-?               This help
-q               Quit
+Navigation
+  Tab/Shift+Tab  Switch pane
+  j/k, Up/Down   Navigate list
+  n              Load more results
+  Esc            Back to saved channels
 
-Chat pane: type to compose, Enter to send";
+Actions
+  Enter          Watch stream (quality picker)
+  s              Save/unsave channel
+  /              Search channels
+  c              Categories view
+  v              VODs (selected channel)
+  f              Followed channels
+  r              Refresh
+  q              Quit
+
+Chat pane
+  Tab            Switch to chat
+  type to compose, Enter to send
+  Esc            Back to browse
+
+Quality picker
+  j/k or Up/Down  Select quality
+  Enter           Confirm selection
+  Esc             Use default quality
+
+?               Toggle this help";
     let block = Block::default()
         .borders(Borders::ALL)
         .title(" Help (? to close) ")
