@@ -16,6 +16,8 @@ pub struct Channel {
     pub viewer_count: Option<u32>,
     pub started_at: Option<String>,
     pub thumbnail_url: Option<String>,
+    #[serde(default)]
+    pub tags: Vec<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
