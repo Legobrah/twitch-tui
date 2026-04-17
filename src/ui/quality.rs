@@ -1,7 +1,7 @@
 use crate::app::{App, AppMode, QUALITY_OPTIONS};
 use ratatui::{
     layout::Rect,
-    style::{Modifier, Style},
+    style::{Color, Modifier, Style},
     widgets::{Block, Borders, Clear, List, ListItem, ListState, Paragraph},
     Frame,
 };
@@ -18,6 +18,10 @@ pub fn render(f: &mut Frame, app: &App, area: Rect) {
     let x = area.width.saturating_sub(overlay_width) / 2;
     let y = area.height.saturating_sub(overlay_height) / 2;
     let overlay_area = Rect::new(x, y, overlay_width, overlay_height);
+
+    // Dim background
+    let dim_bg = Block::default().style(Style::default().bg(Color::Rgb(3, 4, 12)));
+    f.render_widget(dim_bg, area);
 
     f.render_widget(Clear, overlay_area);
 

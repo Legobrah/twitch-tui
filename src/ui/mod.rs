@@ -10,13 +10,17 @@ pub mod theme;
 use crate::app::{App, AppMode};
 use ratatui::{
     layout::{Constraint, Direction, Layout, Rect},
-    style::Style,
-    widgets::Paragraph,
+    style::{Color, Style},
+    widgets::{Block, Paragraph},
     Frame,
 };
 
 pub fn render(f: &mut Frame, app: &mut App) {
     let size = f.area();
+
+    // Set terminal background
+    let bg = Block::default().style(Style::default().bg(theme::BG));
+    f.render_widget(bg, size);
 
     let error_height = if app.error_message.is_some() { 1 } else { 0 };
     let top_height = 1 + error_height;
@@ -38,8 +42,8 @@ pub fn render(f: &mut Frame, app: &mut App) {
     chat::render(f, app, chunks[2]);
 
     if let Some(err) = &app.error_message {
-        let error_bar = Paragraph::new(err.clone())
-            .style(Style::default().fg(theme::RED));
+        let error_bar = Paragraph::new(format!(" {} ", err))
+            .style(Style::default().fg(theme::RED).bg(Color::Rgb(40, 15, 20)));
         let bar_area = Rect::new(size.x, size.y + 1, size.width, 1);
         f.render_widget(error_bar, bar_area);
     }
