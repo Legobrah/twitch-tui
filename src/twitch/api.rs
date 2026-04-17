@@ -2,6 +2,7 @@ use crate::twitch::auth::Auth;
 use crate::twitch::{Channel, Game, Vod};
 use reqwest::Client;
 use serde::Deserialize;
+use tracing::{debug, error, info};
 
 #[derive(Debug)]
 pub struct TwitchApi {
@@ -101,7 +102,7 @@ impl TwitchApi {
     }
 
     pub async fn get_streams(&self, user_logins: &[String]) -> Result<Vec<Channel>, String> {
-        let headers = self.build_headers()?;
+        let headers = self.build_headers().map_err(|e| { error!("build_headers error: {}", e); e })?;
         let params: Vec<String> = user_logins
             .iter()
             .map(|l| format!("user_login={}", l))
@@ -114,16 +115,20 @@ impl TwitchApi {
             .headers(headers)
             .send()
             .await
-            .map_err(|e| format!("Network error: {}", e))?;
+            .map_err(|e| { error!("Network error in get_streams: {}", e); format!("Network error: {}", e) })?;
 
+        debug!("get_streams response status: {}", resp.status());
         if !resp.status().is_success() {
-            return Err(format!("API error: {}", resp.status()));
+            let status = resp.status();
+            let body = resp.text().await.unwrap_or_default();
+            error!("get_streams API error {}: {}", status, body);
+            return Err(format!("API error {}: {}", status, body));
         }
 
-        let data: StreamsResponse = resp
-            .json()
-            .await
-            .map_err(|e| format!("Parse error: {}", e))?;
+        let raw = resp.text().await.map_err(|e| format!("Read body error: {}", e))?;
+        debug!("get_streams response body (first 500 chars): {}", &raw[..500.min(raw.len())]);
+        let data: StreamsResponse = serde_json::from_str(&raw)
+            .map_err(|e| { error!("Parse error in get_streams: {}", e); format!("Parse error: {}", e) })?;
 
         Ok(data
             .data

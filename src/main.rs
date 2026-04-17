@@ -16,6 +16,7 @@ use crossterm::{
 };
 use ratatui::{backend::CrosstermBackend, Terminal};
 use tokio::sync::mpsc;
+use tracing::{debug, error, info, warn};
 
 use app::{App, AppEvent, AppMode, FocusTarget};
 use config::Config;
@@ -23,11 +24,30 @@ use db::Db;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    // Init tracing to file
+    let log_file = std::fs::File::create("/tmp/twitch-tui.log")?;
+    tracing_subscriber::fmt()
+        .with_max_level(tracing::Level::DEBUG)
+        .with_writer(log_file)
+        .with_ansi(false)
+        .init();
+
+    info!("twitch-tui starting");
+
     let config = Config::load()?;
+    info!("Config loaded from {:?}", Config::config_dir());
+    debug!("Config: client_id={}, has_token={}, poll_interval={}",
+        &config.twitch.client_id[..8.min(config.twitch.client_id.len())],
+        config.twitch.oauth_token.is_some(),
+        config.poll_interval_secs);
+
     let auth = twitch::auth::Auth::from_config(&config);
+    info!("Auth: has_token={}, username={:?}", auth.has_token(), auth.username);
 
     let db = Db::open()?;
     let saved_channels = db.get_saved_channels()?;
+    info!("DB opened, {} saved channels: {:?}", saved_channels.len(),
+        saved_channels.iter().map(|c| c.name.clone()).collect::<Vec<_>>());
 
     // Terminal setup
     crossterm::terminal::enable_raw_mode()?;
@@ -35,6 +55,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend)?;
     crossterm::execute!(terminal.backend_mut(), EnterAlternateScreen)?;
+    info!("Terminal initialized");
 
     let mut app = App::new(saved_channels);
     let (tx, mut rx) = mpsc::unbounded_channel::<AppEvent>();
@@ -45,15 +66,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let auth_clone = auth.clone();
     let poll_secs = config.poll_interval_secs;
     if !poll_logins.is_empty() {
+        info!("Starting background poller for {} channels", poll_logins.len());
         tokio::spawn(async move {
             let api = twitch::api::TwitchApi::new(auth_clone);
             let mut previously_live: Vec<String> = Vec::new();
             loop {
+                debug!("Polling streams for {:?}", poll_logins);
                 match api.get_streams(&poll_logins).await {
                     Ok(channels) => {
+                        info!("Poll returned {} live channels", channels.len());
                         let now_live: Vec<String> =
                             channels.iter().map(|c| c.name.clone()).collect();
-                        // Notify on newly live channels
                         for ch in &channels {
                             if !previously_live.contains(&ch.name) {
                                 let title = format!("{} is LIVE", ch.display_name);
@@ -70,12 +93,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         let _ = tx_poll.send(AppEvent::ChannelsLoaded(channels));
                     }
                     Err(e) => {
+                        error!("Poll error: {}", e);
                         let _ = tx_poll.send(AppEvent::Error(format!("Poll error: {}", e)));
                     }
                 }
                 tokio::time::sleep(Duration::from_secs(poll_secs)).await;
             }
         });
+    } else {
+        info!("No saved channels, skipping poller");
     }
 
     let result = run_app(&mut terminal, &mut app, &mut rx, &db, &config, &auth, &tx);
@@ -84,6 +110,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     crossterm::execute!(terminal.backend_mut(), LeaveAlternateScreen)?;
     crossterm::terminal::disable_raw_mode()?;
     terminal.show_cursor()?;
+    info!("twitch-tui exiting");
 
     result
 }
@@ -112,32 +139,39 @@ fn run_app(
         while let Ok(evt) = rx.try_recv() {
             match evt {
                 AppEvent::ChannelsLoaded(channels) => {
+                    info!("AppEvent::ChannelsLoaded({} channels)", channels.len());
                     app.channels = channels;
                     app.is_loading = false;
                 }
                 AppEvent::CategoriesLoaded(games) => {
+                    info!("AppEvent::CategoriesLoaded({} games)", games.len());
                     app.categories = games;
                     app.is_loading = false;
                 }
                 AppEvent::CategoryStreamsLoaded(streams) => {
+                    info!("AppEvent::CategoryStreamsLoaded({} streams)", streams.len());
                     app.category_streams = streams;
                     app.is_loading = false;
                 }
                 AppEvent::SearchResults(results) => {
+                    info!("AppEvent::SearchResults({} results)", results.len());
                     app.search_results = results;
                     app.is_loading = false;
                 }
                 AppEvent::VodsLoaded(vods) => {
+                    info!("AppEvent::VodsLoaded({} vods)", vods.len());
                     app.vods = vods;
                     app.is_loading = false;
                 }
                 AppEvent::ChatMessage(msg) => {
+                    debug!("Chat: {}: {}", msg.sender, msg.message);
                     app.chat_messages.push(msg);
                     if app.chat_messages.len() > 500 {
                         app.chat_messages.drain(0..100);
                     }
                 }
                 AppEvent::ChatConnected(channel) => {
+                    info!("ChatConnected: {}", channel);
                     app.chat_messages.push(twitch::ChatMessage {
                         sender: String::new(),
                         message: format!("Connected to {}", channel),
@@ -145,6 +179,7 @@ fn run_app(
                     });
                 }
                 AppEvent::Error(e) => {
+                    error!("AppEvent::Error: {}", e);
                     app.error_message = Some(e);
                 }
                 AppEvent::Tick => {}
@@ -188,6 +223,7 @@ fn handle_key(
                         if let Some(channel) = current_chat_channel.as_ref() {
                             let msg = app.chat_input.clone();
                             let ch = channel.clone();
+                            info!("Sending chat message to {}: {}", ch, msg);
                             let _ = client.say(ch, msg);
                         }
                     }
@@ -216,7 +252,6 @@ fn handle_key(
                 return;
             }
             KeyCode::Enter => {
-                // Watch selected search result
                 if let Some(ch) = app.selected_channel() {
                     let channel_name = ch.name.clone();
                     let quality = config.default_quality.clone();
@@ -255,7 +290,10 @@ fn handle_key(
     }
 
     match key.code {
-        KeyCode::Char('q') => app.should_quit = true,
+        KeyCode::Char('q') => {
+            info!("Quit requested");
+            app.should_quit = true;
+        }
         KeyCode::Char('?') => app.show_help = true,
         KeyCode::Tab => app.cycle_focus(),
         KeyCode::BackTab => {
@@ -273,6 +311,7 @@ fn handle_key(
         KeyCode::Char('s') => handle_save(app, db),
 
         KeyCode::Char('c') => {
+            info!("Switching to categories mode");
             app.mode = AppMode::Categories;
             app.reset_selection();
             app.is_loading = true;
@@ -280,15 +319,18 @@ fn handle_key(
         }
         KeyCode::Char('f') => {
             if auth.has_token() {
+                info!("Fetching followed channels");
                 app.mode = AppMode::Followed;
                 app.reset_selection();
                 app.is_loading = true;
                 spawn_followed(auth, tx);
             } else {
+                warn!("No OAuth token for followed channels");
                 app.error_message = Some("OAuth required. Set token in ~/.config/twitch-tui/config.toml".to_string());
             }
         }
         KeyCode::Char('/') => {
+            info!("Entering search mode");
             app.mode = AppMode::Search {
                 query: String::new(),
             };
@@ -299,6 +341,7 @@ fn handle_key(
             if let Some(ch) = app.selected_channel() {
                 let channel_name = ch.display_name.clone();
                 let user_id = ch.twitch_id.clone();
+                info!("Fetching VODs for {} ({})", channel_name, user_id);
                 app.mode = AppMode::Vods { channel_name };
                 app.reset_selection();
                 app.is_loading = true;
@@ -310,6 +353,7 @@ fn handle_key(
             app.reset_selection();
         }
         KeyCode::Char('r') => {
+            info!("Refresh requested");
             app.is_loading = true;
         }
 
@@ -330,6 +374,7 @@ fn handle_enter(
             if let Some(game) = app.categories.get(app.selected_index) {
                 let game_id = game.id.clone();
                 let game_name = game.name.clone();
+                info!("Entering category: {} ({})", game_name, game_id);
                 app.mode = AppMode::CategoryStreams { game_id, game_name };
                 app.reset_selection();
                 app.is_loading = true;
@@ -343,10 +388,13 @@ fn handle_enter(
         AppMode::SavedChannels | AppMode::Followed | AppMode::CategoryStreams { .. } => {
             if let Some(ch) = app.selected_channel() {
                 let channel_name = ch.name.clone();
+                info!("Watching stream: {}", channel_name);
                 let quality = config.default_quality.clone();
                 let cn = channel_name.clone();
                 tokio::spawn(async move {
-                    let _ = player::watch_stream(&cn, &quality).await;
+                    if let Err(e) = player::watch_stream(&cn, &quality).await {
+                        tracing::error!("Player error: {}", e);
+                    }
                 });
                 connect_chat(auth, tx, &channel_name, irc_client, current_chat_channel);
             }
@@ -354,9 +402,12 @@ fn handle_enter(
         AppMode::Vods { .. } => {
             if let Some(vod) = app.vods.get(app.selected_index) {
                 let vod_id = vod.id.clone();
+                info!("Watching VOD: {}", vod_id);
                 let quality = config.default_quality.clone();
                 tokio::spawn(async move {
-                    let _ = player::watch_vod(&vod_id, &quality).await;
+                    if let Err(e) = player::watch_vod(&vod_id, &quality).await {
+                        tracing::error!("VOD player error: {}", e);
+                    }
                 });
             }
         }
@@ -372,11 +423,13 @@ fn handle_save(app: &mut App, db: &Db) {
 
         match db.is_channel_saved(&twitch_id) {
             Ok(true) => {
+                info!("Removing saved channel: {}", name);
                 if db.remove_channel(&twitch_id).is_ok() {
                     app.saved_channels.retain(|c| c.twitch_id != twitch_id);
                 }
             }
             Ok(false) => {
+                info!("Saving channel: {}", name);
                 if db.save_channel(&twitch_id, &name, &display_name).is_ok() {
                     app.saved_channels.push(db::SavedChannel {
                         id: 0,
@@ -386,7 +439,9 @@ fn handle_save(app: &mut App, db: &Db) {
                     });
                 }
             }
-            Err(_) => {}
+            Err(e) => {
+                error!("DB error checking saved: {}", e);
+            }
         }
     }
 }
@@ -398,11 +453,14 @@ fn spawn_categories(auth: &twitch::auth::Auth, tx: &mpsc::UnboundedSender<AppEve
     let tx = tx.clone();
     tokio::spawn(async move {
         let api = twitch::api::TwitchApi::new(auth);
+        debug!("Fetching top games");
         match api.get_top_games(20).await {
             Ok(games) => {
+                info!("Fetched {} games", games.len());
                 let _ = tx.send(AppEvent::CategoriesLoaded(games));
             }
             Err(e) => {
+                error!("Categories fetch error: {}", e);
                 let _ = tx.send(AppEvent::Error(format!("Categories error: {}", e)));
             }
         }
@@ -419,11 +477,14 @@ fn spawn_category_streams(
     let gid = game_id.to_string();
     tokio::spawn(async move {
         let api = twitch::api::TwitchApi::new(auth);
+        debug!("Fetching streams for game {}", gid);
         match api.get_streams_by_game(&gid, 20).await {
             Ok(streams) => {
+                info!("Fetched {} streams for game", streams.len());
                 let _ = tx.send(AppEvent::CategoryStreamsLoaded(streams));
             }
             Err(e) => {
+                error!("Category streams error: {}", e);
                 let _ = tx.send(AppEvent::Error(format!("Category streams error: {}", e)));
             }
         }
@@ -444,11 +505,14 @@ fn spawn_search(
     let q = query.to_string();
     tokio::spawn(async move {
         let api = twitch::api::TwitchApi::new(auth);
+        debug!("Searching channels: {}", q);
         match api.search_channels(&q, 20).await {
             Ok(results) => {
+                info!("Search '{}' returned {} results", q, results.len());
                 let _ = tx.send(AppEvent::SearchResults(results));
             }
             Err(e) => {
+                error!("Search error: {}", e);
                 let _ = tx.send(AppEvent::Error(format!("Search error: {}", e)));
             }
         }
@@ -465,11 +529,14 @@ fn spawn_vods(
     let uid = user_id.to_string();
     tokio::spawn(async move {
         let api = twitch::api::TwitchApi::new(auth);
+        debug!("Fetching VODs for user {}", uid);
         match api.get_vods(&uid, 10).await {
             Ok(vods) => {
+                info!("Fetched {} VODs", vods.len());
                 let _ = tx.send(AppEvent::VodsLoaded(vods));
             }
             Err(e) => {
+                error!("VODs error: {}", e);
                 let _ = tx.send(AppEvent::Error(format!("VODs error: {}", e)));
             }
         }
@@ -483,11 +550,12 @@ fn connect_chat(
     irc_client: &mut Option<twitch::irc::IrcClient>,
     current_chat_channel: &mut Option<String>,
 ) {
-    // Skip if already connected to this channel
     if current_chat_channel.as_deref() == Some(channel) {
+        debug!("Already connected to {}", channel);
         return;
     }
 
+    info!("Connecting to chat: {} (authenticated={})", channel, auth.has_token());
     let result = if let (Some(username), Some(token)) = (&auth.username, &auth.oauth_token) {
         twitch::irc::connect_authenticated(username, token, channel, tx.clone())
     } else {
@@ -496,11 +564,13 @@ fn connect_chat(
 
     match result {
         Ok(client) => {
+            info!("Chat connected to {}", channel);
             *irc_client = Some(client);
             *current_chat_channel = Some(channel.to_string());
             let _ = tx.send(AppEvent::ChatConnected(channel.to_string()));
         }
         Err(e) => {
+            error!("Chat connect error: {}", e);
             let _ = tx.send(AppEvent::Error(format!("Chat connect error: {}", e)));
         }
     }
@@ -511,40 +581,48 @@ fn spawn_followed(auth: &twitch::auth::Auth, tx: &mpsc::UnboundedSender<AppEvent
     let tx = tx.clone();
     tokio::spawn(async move {
         let api = twitch::api::TwitchApi::new(auth);
+        debug!("Fetching current user");
         match api.get_current_user().await {
-            Ok(user) => match api.get_followed_channels(&user.id).await {
-                Ok(channels) => {
-                    // Fetch live status for followed
-                    let logins: Vec<String> = channels.iter().map(|c| c.name.clone()).collect();
-                    if !logins.is_empty() {
-                        match api.get_streams(&logins).await {
-                            Ok(live) => {
-                                let mut merged = channels;
-                                for ch in &mut merged {
-                                    if let Some(live_ch) = live.iter().find(|l| l.name == ch.name) {
-                                        ch.is_live = true;
-                                        ch.title = live_ch.title.clone();
-                                        ch.game_name = live_ch.game_name.clone();
-                                        ch.viewer_count = live_ch.viewer_count;
-                                        ch.started_at = live_ch.started_at.clone();
+            Ok(user) => {
+                info!("Current user: {} ({})", user.display_name, user.id);
+                match api.get_followed_channels(&user.id).await {
+                    Ok(channels) => {
+                        info!("Fetched {} followed channels", channels.len());
+                        let logins: Vec<String> = channels.iter().map(|c| c.name.clone()).collect();
+                        if !logins.is_empty() {
+                            match api.get_streams(&logins).await {
+                                Ok(live) => {
+                                    info!("{} followed channels are live", live.len());
+                                    let mut merged = channels;
+                                    for ch in &mut merged {
+                                        if let Some(live_ch) = live.iter().find(|l| l.name == ch.name) {
+                                            ch.is_live = true;
+                                            ch.title = live_ch.title.clone();
+                                            ch.game_name = live_ch.game_name.clone();
+                                            ch.viewer_count = live_ch.viewer_count;
+                                            ch.started_at = live_ch.started_at.clone();
+                                        }
                                     }
+                                    let _ = tx.send(AppEvent::ChannelsLoaded(merged));
                                 }
-                                let _ = tx.send(AppEvent::ChannelsLoaded(merged));
+                                Err(e) => {
+                                    error!("Followed live check error: {}", e);
+                                    let _ = tx.send(AppEvent::Error(format!("Followed live check: {}", e)));
+                                    let _ = tx.send(AppEvent::ChannelsLoaded(channels));
+                                }
                             }
-                            Err(e) => {
-                                let _ = tx.send(AppEvent::Error(format!("Followed live check: {}", e)));
-                                let _ = tx.send(AppEvent::ChannelsLoaded(channels));
-                            }
+                        } else {
+                            let _ = tx.send(AppEvent::ChannelsLoaded(channels));
                         }
-                    } else {
-                        let _ = tx.send(AppEvent::ChannelsLoaded(channels));
+                    }
+                    Err(e) => {
+                        error!("Followed channels error: {}", e);
+                        let _ = tx.send(AppEvent::Error(format!("Followed error: {}", e)));
                     }
                 }
-                Err(e) => {
-                    let _ = tx.send(AppEvent::Error(format!("Followed error: {}", e)));
-                }
-            },
+            }
             Err(e) => {
+                error!("Get current user error: {}", e);
                 let _ = tx.send(AppEvent::Error(format!("User info error: {}", e)));
             }
         }
