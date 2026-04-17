@@ -21,6 +21,16 @@ impl Db {
             std::fs::create_dir_all(parent).ok();
         }
         let conn = Connection::open(&path)?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mut perms = std::fs::metadata(&path)
+                .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?
+                .permissions();
+            perms.set_mode(0o600);
+            std::fs::set_permissions(&path, perms)
+                .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?;
+        }
         let db = Self { conn };
         db.run_migrations()?;
         Ok(db)

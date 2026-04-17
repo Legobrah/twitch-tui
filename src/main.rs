@@ -25,7 +25,20 @@ use db::Db;
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Init tracing to file
-    let log_file = std::fs::File::create("/tmp/twitch-tui.log")?;
+    let log_dir = directories::ProjectDirs::from("", "", "twitch-tui")
+        .expect("Could not determine data directory")
+        .data_dir()
+        .to_path_buf();
+    std::fs::create_dir_all(&log_dir).ok();
+    let log_path = log_dir.join("twitch-tui.log");
+    let log_file = std::fs::File::create(&log_path)?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mut perms = log_file.metadata()?.permissions();
+        perms.set_mode(0o600);
+        log_file.set_permissions(perms)?;
+    }
     tracing_subscriber::fmt()
         .with_max_level(tracing::Level::DEBUG)
         .with_writer(log_file)
@@ -33,6 +46,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .init();
 
     info!("twitch-tui starting");
+    info!("Log file: {:?}", log_path);
 
     let config = Config::load()?;
     info!("Config loaded from {:?}", Config::config_dir());
@@ -189,7 +203,7 @@ fn run_app(
                     app.is_loading = false;
                 }
                 AppEvent::ChatMessage(msg) => {
-                    debug!("Chat: {}: {}", msg.sender, msg.message);
+                    debug!("Chat: {} ({} chars)", msg.sender, msg.message.len());
                     app.chat_messages.push(msg);
                     if app.chat_messages.len() > 500 {
                         app.chat_messages.drain(0..100);
@@ -291,7 +305,7 @@ fn handle_key(
                         if let Some(channel) = current_chat_channel.as_ref() {
                             let msg = app.chat_input.clone();
                             let ch = channel.clone();
-                            info!("Sending chat message to {}: {}", ch, msg);
+                            info!("Sending chat message to {}", ch);
                             let _ = client.say(ch, msg);
                         }
                     }
