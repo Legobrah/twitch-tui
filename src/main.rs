@@ -220,8 +220,17 @@ fn run_app(
                 AppEvent::Error(e) => {
                     error!("AppEvent::Error: {}", e);
                     app.error_message = Some(e);
+                    app.error_time = Some(std::time::Instant::now());
                 }
                 AppEvent::Tick => {}
+            }
+        }
+
+        // Auto-dismiss errors after 5 seconds
+        if let Some(t) = app.error_time {
+            if t.elapsed().as_secs() >= 5 {
+                app.error_message = None;
+                app.error_time = None;
             }
         }
 
@@ -412,6 +421,7 @@ fn handle_key(
             } else {
                 warn!("No OAuth token for followed channels");
                 app.error_message = Some("OAuth required. Set token in ~/.config/twitch-tui/config.toml".to_string());
+                app.error_time = Some(std::time::Instant::now());
             }
         }
         KeyCode::Char('/') => {

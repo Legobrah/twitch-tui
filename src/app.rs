@@ -62,6 +62,7 @@ pub struct App {
     pub is_loading: bool,
     pub should_quit: bool,
     pub pagination_cursor: Option<String>,
+    pub error_time: Option<std::time::Instant>,
 }
 
 impl App {
@@ -83,6 +84,7 @@ impl App {
             is_loading: false,
             should_quit: false,
             pagination_cursor: None,
+            error_time: None,
         }
     }
 
@@ -101,14 +103,15 @@ impl App {
 
     pub fn select_next(&mut self) {
         let len = self.current_channels().len();
-        if len > 0 && self.selected_index < len - 1 {
-            self.selected_index += 1;
+        if len > 0 {
+            self.selected_index = (self.selected_index + 1) % len;
         }
     }
 
     pub fn select_prev(&mut self) {
-        if self.selected_index > 0 {
-            self.selected_index -= 1;
+        let len = self.current_channels().len();
+        if len > 0 {
+            self.selected_index = (self.selected_index + len - 1) % len;
         }
     }
 
