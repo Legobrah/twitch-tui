@@ -2,11 +2,41 @@ use crate::app::{App, AppMode, FocusTarget};
 use crate::ui::format::{format_uptime, format_viewers};
 use ratatui::{
     layout::Rect,
-    style::{Modifier, Style},
+    style::{Color, Modifier, Style},
+    text::{Line, Span},
     widgets::{Block, Borders, List, ListItem, ListState, Paragraph},
     Frame,
 };
 use super::theme;
+
+const SELECTION_BG: Color = Color::Rgb(15, 20, 40);
+
+/// Build a Span with the selection background applied when `selected` is true.
+fn fg_span<'a>(content: impl Into<std::borrow::Cow<'a, str>>, color: Color, selected: bool) -> Span<'a> {
+    let mut style = Style::default().fg(color);
+    if selected {
+        style = style.bg(SELECTION_BG);
+    }
+    Span::styled(content, style)
+}
+
+/// Separator span (two spaces) that picks up the item background.
+fn sep<'a>() -> Span<'a> {
+    Span::raw("  ")
+}
+
+/// Build a ListItem from a Line, applying the selection background if selected.
+fn styled_item<'a>(line: Line<'a>, selected: bool) -> ListItem<'a> {
+    let bg = if selected { SELECTION_BG } else { Color::Reset };
+    ListItem::new(line).style(Style::default().bg(bg))
+}
+
+/// Centered pagination prompt with box-drawing characters.
+fn more_prompt<'a>() -> ListItem<'a> {
+    ListItem::new(Line::from(vec![
+        Span::styled("── press 'n' for more ──", Style::default().fg(theme::DIM_TEXT)),
+    ]))
+}
 
 pub fn render(f: &mut Frame, app: &mut App, area: Rect) {
     let focused = app.focus == FocusTarget::Browse;
@@ -91,38 +121,59 @@ fn render_channels(
         _ => format!(" Saved · {} ch · {} live ", total, live_count),
     };
 
-    let items: Vec<ListItem> = app
+    let mut items: Vec<ListItem> = app
         .channels
         .iter()
         .enumerate()
         .map(|(i, ch)| {
-            let style = if i == app.selected_index && focused {
-                Style::default()
-                    .fg(theme::CYAN)
-                    .add_modifier(Modifier::BOLD)
-            } else if ch.is_live {
-                Style::default().fg(theme::TEXT)
-            } else {
-                Style::default().fg(theme::DIM_TEXT)
-            };
-            let line = if ch.is_live {
+            let sel = i == app.selected_index && focused;
+            if ch.is_live {
                 let uptime = ch.started_at.as_deref().map(format_uptime).unwrap_or_default();
                 let game = ch.game_name.as_deref().unwrap_or("");
                 let viewers = ch.viewer_count.map(|v| format_viewers(v)).unwrap_or_default();
-                format!("{} {}  {}  {} {}", theme::LIVE_DOT, ch.display_name, uptime, game, viewers)
+
+                let name_style = if sel {
+                    Style::default().fg(theme::TEXT).add_modifier(Modifier::BOLD).bg(SELECTION_BG)
+                } else {
+                    Style::default().fg(theme::TEXT)
+                };
+
+                let line = Line::from(vec![
+                    Span::styled(theme::LIVE_DOT, Style::default().fg(theme::RED).bg(if sel { SELECTION_BG } else { Color::Reset })),
+                    Span::raw(" "),
+                    Span::styled(ch.display_name.clone(), name_style),
+                    sep(),
+                    fg_span(uptime, theme::DIM_TEXT, sel),
+                    sep(),
+                    fg_span(game, theme::DIM_TEXT, sel),
+                    sep(),
+                    fg_span(viewers, theme::GREEN, sel),
+                ]);
+                styled_item(line, sel)
             } else {
-                format!("{} {}  offline", theme::OFFLINE_DOT, ch.display_name)
-            };
-            ListItem::new(line).style(style)
+                let name_style = if sel {
+                    Style::default().fg(theme::DIM_TEXT).add_modifier(Modifier::BOLD).bg(SELECTION_BG)
+                } else {
+                    Style::default().fg(theme::DIM_TEXT)
+                };
+                let offline_style = Style::default()
+                    .fg(theme::DIM_TEXT)
+                    .add_modifier(Modifier::ITALIC)
+                    .bg(if sel { SELECTION_BG } else { Color::Reset });
+
+                let line = Line::from(vec![
+                    Span::styled(theme::OFFLINE_DOT, Style::default().fg(theme::DIM_TEXT).bg(if sel { SELECTION_BG } else { Color::Reset })),
+                    Span::raw(" "),
+                    Span::styled(ch.display_name.clone(), name_style),
+                    Span::styled("  offline", offline_style),
+                ]);
+                styled_item(line, sel)
+            }
         })
         .collect();
 
-    let mut items = items;
     if app.pagination_cursor.is_some() {
-        items.push(
-            ListItem::new(" -- press 'n' for more --")
-                .style(Style::default().fg(theme::DIM_TEXT))
-        );
+        items.push(more_prompt());
     }
 
     let list = List::new(items).block(
@@ -164,22 +215,21 @@ fn render_categories(
         .iter()
         .enumerate()
         .map(|(i, game)| {
-            let style = if i == app.selected_index && focused {
-                Style::default()
-                    .fg(theme::CYAN)
-                    .add_modifier(Modifier::BOLD)
+            let sel = i == app.selected_index && focused;
+            let name_style = if sel {
+                Style::default().fg(theme::TEXT).add_modifier(Modifier::BOLD).bg(SELECTION_BG)
             } else {
                 Style::default().fg(theme::TEXT)
             };
-            ListItem::new(format!(" {}", game.name)).style(style)
+            let line = Line::from(vec![
+                Span::styled(format!(" {}", game.name), name_style),
+            ]);
+            styled_item(line, sel)
         })
         .collect();
 
     if app.pagination_cursor.is_some() {
-        items.push(
-            ListItem::new(" -- press 'n' for more --")
-                .style(Style::default().fg(theme::DIM_TEXT))
-        );
+        items.push(more_prompt());
     }
 
     let list = List::new(items).block(
@@ -222,25 +272,31 @@ fn render_category_streams(
         .iter()
         .enumerate()
         .map(|(i, ch)| {
-            let style = if i == app.selected_index && focused {
-                Style::default()
-                    .fg(theme::CYAN)
-                    .add_modifier(Modifier::BOLD)
+            let sel = i == app.selected_index && focused;
+            let uptime = ch.started_at.as_deref().map(format_uptime).unwrap_or_default();
+            let viewers = ch.viewer_count.map(|v| format_viewers(v)).unwrap_or_default();
+
+            let name_style = if sel {
+                Style::default().fg(theme::TEXT).add_modifier(Modifier::BOLD).bg(SELECTION_BG)
             } else {
                 Style::default().fg(theme::TEXT)
             };
-            let uptime = ch.started_at.as_deref().map(format_uptime).unwrap_or_default();
-            let viewers = ch.viewer_count.map(|v| format_viewers(v)).unwrap_or_default();
-            ListItem::new(format!("{} {}  {}  {}", theme::LIVE_DOT, ch.display_name, uptime, viewers))
-                .style(style)
+
+            let line = Line::from(vec![
+                Span::styled(theme::LIVE_DOT, Style::default().fg(theme::RED).bg(if sel { SELECTION_BG } else { Color::Reset })),
+                Span::raw(" "),
+                Span::styled(ch.display_name.clone(), name_style),
+                sep(),
+                fg_span(uptime, theme::DIM_TEXT, sel),
+                sep(),
+                fg_span(viewers, theme::GREEN, sel),
+            ]);
+            styled_item(line, sel)
         })
         .collect();
 
     if app.pagination_cursor.is_some() {
-        items.push(
-            ListItem::new(" -- press 'n' for more --")
-                .style(Style::default().fg(theme::DIM_TEXT))
-        );
+        items.push(more_prompt());
     }
 
     let list = List::new(items).block(
@@ -283,21 +339,24 @@ fn render_search(
         .iter()
         .enumerate()
         .map(|(i, ch)| {
-            let live = if ch.is_live {
-                theme::LIVE_DOT
-            } else {
-                theme::OFFLINE_DOT
-            };
-            let style = if i == app.selected_index && focused {
-                Style::default()
-                    .fg(theme::CYAN)
-                    .add_modifier(Modifier::BOLD)
+            let sel = i == app.selected_index && focused;
+            let dot_str = if ch.is_live { theme::LIVE_DOT } else { theme::OFFLINE_DOT };
+            let dot_color = if ch.is_live { theme::RED } else { theme::DIM_TEXT };
+
+            let name_style = if sel {
+                Style::default().fg(theme::TEXT).add_modifier(Modifier::BOLD).bg(SELECTION_BG)
             } else if ch.is_live {
                 Style::default().fg(theme::TEXT)
             } else {
                 Style::default().fg(theme::DIM_TEXT)
             };
-            ListItem::new(format!("{} {}", live, ch.display_name)).style(style)
+
+            let line = Line::from(vec![
+                Span::styled(dot_str, Style::default().fg(dot_color).bg(if sel { SELECTION_BG } else { Color:: Reset })),
+                Span::raw(" "),
+                Span::styled(ch.display_name.clone(), name_style),
+            ]);
+            styled_item(line, sel)
         })
         .collect();
 
@@ -347,22 +406,26 @@ fn render_vods(
         .iter()
         .enumerate()
         .map(|(i, vod)| {
-            let style = if i == app.selected_index && focused {
-                Style::default()
-                    .fg(theme::CYAN)
-                    .add_modifier(Modifier::BOLD)
+            let sel = i == app.selected_index && focused;
+
+            let title_style = if sel {
+                Style::default().fg(theme::TEXT).add_modifier(Modifier::BOLD).bg(SELECTION_BG)
             } else {
                 Style::default().fg(theme::TEXT)
             };
-            ListItem::new(format!(" [{}] {}", vod.duration, vod.title)).style(style)
+
+            let line = Line::from(vec![
+                Span::raw(" "),
+                Span::styled(format!("[{}]", vod.duration), Style::default().fg(theme::GREEN).bg(if sel { SELECTION_BG } else { Color::Reset })),
+                Span::raw(" "),
+                Span::styled(vod.title.clone(), title_style),
+            ]);
+            styled_item(line, sel)
         })
         .collect();
 
     if app.pagination_cursor.is_some() {
-        items.push(
-            ListItem::new(" -- press 'n' for more --")
-                .style(Style::default().fg(theme::DIM_TEXT))
-        );
+        items.push(more_prompt());
     }
 
     let list = List::new(items).block(
