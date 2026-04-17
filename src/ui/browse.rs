@@ -1,8 +1,9 @@
 use crate::app::{App, AppMode, FocusTarget};
+use crate::ui::format::{format_uptime, format_viewers};
 use ratatui::{
     layout::Rect,
     style::{Modifier, Style},
-    widgets::{Block, Borders, List, ListItem, ListState},
+    widgets::{Block, Borders, List, ListItem, ListState, Paragraph},
     Frame,
 };
 use super::theme;
@@ -11,6 +12,19 @@ pub fn render(f: &mut Frame, app: &mut App, area: Rect) {
     let focused = app.focus == FocusTarget::Browse;
     let border_color = if focused { theme::CYAN } else { theme::BORDER };
     let mode = app.mode.clone();
+
+    if app.is_loading {
+        let loading = Paragraph::new(" Loading...")
+            .style(Style::default().fg(theme::DIM_TEXT))
+            .block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .title(format!(" {} ", header_title(&mode)))
+                    .border_style(Style::default().fg(border_color)),
+            );
+        f.render_widget(loading, area);
+        return;
+    }
 
     match &mode {
         AppMode::SavedChannels | AppMode::Followed => {
@@ -28,9 +42,19 @@ pub fn render(f: &mut Frame, app: &mut App, area: Rect) {
         AppMode::Vods { channel_name } => {
             render_vods(f, app, area, border_color, focused, channel_name);
         }
-        AppMode::QualitySelect { .. } => {
-            render_channels(f, app, area, border_color, focused, &mode);
-        }
+        _ => {}
+    }
+}
+
+fn header_title(mode: &AppMode) -> String {
+    match mode {
+        AppMode::SavedChannels => "Saved Channels".to_string(),
+        AppMode::Followed => "Following".to_string(),
+        AppMode::Categories => "Categories".to_string(),
+        AppMode::CategoryStreams { game_name, .. } => game_name.clone(),
+        AppMode::Search { query } => format!("Search: {}", query),
+        AppMode::Vods { channel_name } => format!("VODs: {}", channel_name),
+        _ => String::new(),
     }
 }
 
@@ -42,9 +66,29 @@ fn render_channels(
     focused: bool,
     mode: &AppMode,
 ) {
-    let title = match mode {
-        AppMode::Followed => " Followed ",
-        _ => " Saved ",
+    if app.channels.is_empty() {
+        let msg = match mode {
+            AppMode::SavedChannels => "No saved channels.\nPress / to search or f to browse followed.".to_string(),
+            AppMode::Followed => "No followed channels found.".to_string(),
+            _ => "No channels.".to_string(),
+        };
+        let empty = Paragraph::new(msg)
+            .style(Style::default().fg(theme::DIM_TEXT))
+            .block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .title(format!(" {} ", header_title(mode)))
+                    .border_style(Style::default().fg(border_color)),
+            );
+        f.render_widget(empty, area);
+        return;
+    }
+
+    let live_count = app.channels.iter().filter(|c| c.is_live).count();
+    let total = app.channels.len();
+    let header = match mode {
+        AppMode::Followed => format!(" Following · {} ch · {} live ", total, live_count),
+        _ => format!(" Saved · {} ch · {} live ", total, live_count),
     };
 
     let items: Vec<ListItem> = app
@@ -52,16 +96,6 @@ fn render_channels(
         .iter()
         .enumerate()
         .map(|(i, ch)| {
-            let prefix = if ch.is_live {
-                theme::LIVE_DOT
-            } else {
-                theme::OFFLINE_DOT
-            };
-            let viewers = ch
-                .viewer_count
-                .map(|v| format!(" ({})", v))
-                .unwrap_or_default();
-            let line = format!("{} {}{}", prefix, ch.display_name, viewers);
             let style = if i == app.selected_index && focused {
                 Style::default()
                     .fg(theme::CYAN)
@@ -71,14 +105,30 @@ fn render_channels(
             } else {
                 Style::default().fg(theme::DIM_TEXT)
             };
+            let line = if ch.is_live {
+                let uptime = ch.started_at.as_deref().map(format_uptime).unwrap_or_default();
+                let game = ch.game_name.as_deref().unwrap_or("");
+                let viewers = ch.viewer_count.map(|v| format_viewers(v)).unwrap_or_default();
+                format!("{} {}  {}  {} {}", theme::LIVE_DOT, ch.display_name, uptime, game, viewers)
+            } else {
+                format!("{} {}  offline", theme::OFFLINE_DOT, ch.display_name)
+            };
             ListItem::new(line).style(style)
         })
         .collect();
 
+    let mut items = items;
+    if app.pagination_cursor.is_some() {
+        items.push(
+            ListItem::new(" -- press 'n' for more --")
+                .style(Style::default().fg(theme::DIM_TEXT))
+        );
+    }
+
     let list = List::new(items).block(
         Block::default()
             .borders(Borders::ALL)
-            .title(title)
+            .title(format!(" {} ", header))
             .border_style(Style::default().fg(border_color)),
     );
 
@@ -96,7 +146,20 @@ fn render_categories(
     border_color: ratatui::style::Color,
     focused: bool,
 ) {
-    let items: Vec<ListItem> = app
+    if app.categories.is_empty() {
+        let empty = Paragraph::new("No categories loaded.\nPress 'c' to load categories.")
+            .style(Style::default().fg(theme::DIM_TEXT))
+            .block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .title(" Categories ")
+                    .border_style(Style::default().fg(border_color)),
+            );
+        f.render_widget(empty, area);
+        return;
+    }
+
+    let mut items: Vec<ListItem> = app
         .categories
         .iter()
         .enumerate()
@@ -112,10 +175,17 @@ fn render_categories(
         })
         .collect();
 
+    if app.pagination_cursor.is_some() {
+        items.push(
+            ListItem::new(" -- press 'n' for more --")
+                .style(Style::default().fg(theme::DIM_TEXT))
+        );
+    }
+
     let list = List::new(items).block(
         Block::default()
             .borders(Borders::ALL)
-            .title(" Categories ")
+            .title(format!(" Categories · {} ", app.categories.len()))
             .border_style(Style::default().fg(border_color)),
     );
 
@@ -134,16 +204,24 @@ fn render_category_streams(
     focused: bool,
     game_name: &str,
 ) {
-    let items: Vec<ListItem> = app
+    if app.category_streams.is_empty() {
+        let empty = Paragraph::new("No streams in this category.")
+            .style(Style::default().fg(theme::DIM_TEXT))
+            .block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .title(format!(" {} ", game_name))
+                    .border_style(Style::default().fg(border_color)),
+            );
+        f.render_widget(empty, area);
+        return;
+    }
+
+    let mut items: Vec<ListItem> = app
         .category_streams
         .iter()
         .enumerate()
         .map(|(i, ch)| {
-            let viewers = ch
-                .viewer_count
-                .map(|v| format!(" ({})", v))
-                .unwrap_or_default();
-            let line = format!("{} {}{}", theme::LIVE_DOT, ch.display_name, viewers);
             let style = if i == app.selected_index && focused {
                 Style::default()
                     .fg(theme::CYAN)
@@ -151,14 +229,24 @@ fn render_category_streams(
             } else {
                 Style::default().fg(theme::TEXT)
             };
-            ListItem::new(line).style(style)
+            let uptime = ch.started_at.as_deref().map(format_uptime).unwrap_or_default();
+            let viewers = ch.viewer_count.map(|v| format_viewers(v)).unwrap_or_default();
+            ListItem::new(format!("{} {}  {}  {}", theme::LIVE_DOT, ch.display_name, uptime, viewers))
+                .style(style)
         })
         .collect();
+
+    if app.pagination_cursor.is_some() {
+        items.push(
+            ListItem::new(" -- press 'n' for more --")
+                .style(Style::default().fg(theme::DIM_TEXT))
+        );
+    }
 
     let list = List::new(items).block(
         Block::default()
             .borders(Borders::ALL)
-            .title(format!(" {} ", game_name))
+            .title(format!(" {} · {} streams ", game_name, app.category_streams.len()))
             .border_style(Style::default().fg(border_color)),
     );
 
@@ -177,6 +265,19 @@ fn render_search(
     focused: bool,
     query: &str,
 ) {
+    if app.search_results.is_empty() && !query.is_empty() {
+        let empty = Paragraph::new(format!("No results for \"{}\"", query))
+            .style(Style::default().fg(theme::DIM_TEXT))
+            .block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .title(format!(" Search: {} ", query))
+                    .border_style(Style::default().fg(border_color)),
+            );
+        f.render_widget(empty, area);
+        return;
+    }
+
     let items: Vec<ListItem> = app
         .search_results
         .iter()
@@ -187,22 +288,29 @@ fn render_search(
             } else {
                 theme::OFFLINE_DOT
             };
-            let line = format!("{} {}", live, ch.display_name);
             let style = if i == app.selected_index && focused {
                 Style::default()
                     .fg(theme::CYAN)
                     .add_modifier(Modifier::BOLD)
-            } else {
+            } else if ch.is_live {
                 Style::default().fg(theme::TEXT)
+            } else {
+                Style::default().fg(theme::DIM_TEXT)
             };
-            ListItem::new(line).style(style)
+            ListItem::new(format!("{} {}", live, ch.display_name)).style(style)
         })
         .collect();
+
+    let title = if query.is_empty() {
+        " Search ".to_string()
+    } else {
+        format!(" Search: {} · {} results ", query, app.search_results.len())
+    };
 
     let list = List::new(items).block(
         Block::default()
             .borders(Borders::ALL)
-            .title(format!(" Search: {} ", query))
+            .title(title)
             .border_style(Style::default().fg(border_color)),
     );
 
@@ -221,12 +329,24 @@ fn render_vods(
     focused: bool,
     channel_name: &str,
 ) {
-    let items: Vec<ListItem> = app
+    if app.vods.is_empty() {
+        let empty = Paragraph::new(format!("No VODs available for {}", channel_name))
+            .style(Style::default().fg(theme::DIM_TEXT))
+            .block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .title(format!(" VODs: {} ", channel_name))
+                    .border_style(Style::default().fg(border_color)),
+            );
+        f.render_widget(empty, area);
+        return;
+    }
+
+    let mut items: Vec<ListItem> = app
         .vods
         .iter()
         .enumerate()
         .map(|(i, vod)| {
-            let line = format!(" [{}] {}", vod.duration, vod.title);
             let style = if i == app.selected_index && focused {
                 Style::default()
                     .fg(theme::CYAN)
@@ -234,14 +354,21 @@ fn render_vods(
             } else {
                 Style::default().fg(theme::TEXT)
             };
-            ListItem::new(line).style(style)
+            ListItem::new(format!(" [{}] {}", vod.duration, vod.title)).style(style)
         })
         .collect();
+
+    if app.pagination_cursor.is_some() {
+        items.push(
+            ListItem::new(" -- press 'n' for more --")
+                .style(Style::default().fg(theme::DIM_TEXT))
+        );
+    }
 
     let list = List::new(items).block(
         Block::default()
             .borders(Borders::ALL)
-            .title(format!(" VODs: {} ", channel_name))
+            .title(format!(" VODs: {} · {} videos ", channel_name, app.vods.len()))
             .border_style(Style::default().fg(border_color)),
     );
 
