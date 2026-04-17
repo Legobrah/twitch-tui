@@ -16,6 +16,11 @@ pub enum AppMode {
         channel_name: String,
     },
     Followed,
+    QualitySelect {
+        channel_name: String,
+        channel_display_name: String,
+        quality_index: usize,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -27,16 +32,18 @@ pub enum FocusTarget {
 
 #[derive(Debug)]
 pub enum AppEvent {
-    ChannelsLoaded(Vec<Channel>),
-    CategoriesLoaded(Vec<Game>),
-    CategoryStreamsLoaded(Vec<Channel>),
-    SearchResults(Vec<Channel>),
-    VodsLoaded(Vec<Vod>),
+    ChannelsLoaded(Vec<Channel>, Option<String>),
+    CategoriesLoaded(Vec<Game>, Option<String>),
+    CategoryStreamsLoaded(Vec<Channel>, Option<String>),
+    SearchResults(Vec<Channel>, Option<String>),
+    VodsLoaded(Vec<Vod>, Option<String>),
     ChatMessage(ChatMessage),
     ChatConnected(String),
     Error(String),
     Tick,
 }
+
+pub const QUALITY_OPTIONS: &[&str] = &["best", "1080p", "720p", "480p", "360p", "audio_only"];
 
 pub struct App {
     pub mode: AppMode,
@@ -54,6 +61,7 @@ pub struct App {
     pub error_message: Option<String>,
     pub is_loading: bool,
     pub should_quit: bool,
+    pub pagination_cursor: Option<String>,
 }
 
 impl App {
@@ -74,6 +82,7 @@ impl App {
             error_message: None,
             is_loading: false,
             should_quit: false,
+            pagination_cursor: None,
         }
     }
 
@@ -113,5 +122,33 @@ impl App {
 
     pub fn reset_selection(&mut self) {
         self.selected_index = 0;
+    }
+
+    pub fn mode_label(&self) -> &str {
+        match &self.mode {
+            AppMode::SavedChannels => "Saved Channels",
+            AppMode::Categories => "Categories",
+            AppMode::CategoryStreams { game_name, .. } => game_name,
+            AppMode::Search { .. } => "Search",
+            AppMode::Vods { channel_name } => channel_name,
+            AppMode::Followed => "Following",
+            AppMode::QualitySelect { .. } => "Quality",
+        }
+    }
+
+    pub fn key_hints(&self) -> &str {
+        if self.show_help {
+            return "? close help";
+        }
+        if let FocusTarget::Chat = self.focus {
+            return "type message · Enter send · Esc back";
+        }
+        match &self.mode {
+            AppMode::Search { .. } => "type to search · Esc back · Enter watch",
+            AppMode::Categories => "Enter select · Esc back · ? help",
+            AppMode::Vods { .. } => "Enter play · Esc back · ? help",
+            AppMode::QualitySelect { .. } => "j/k choose · Enter select · Esc cancel",
+            _ => "j/k nav · Enter watch · s save · n more · ? help",
+        }
     }
 }

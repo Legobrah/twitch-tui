@@ -28,6 +28,9 @@ pub fn render(f: &mut Frame, app: &mut App, area: Rect) {
         AppMode::Vods { channel_name } => {
             render_vods(f, app, area, border_color, focused, channel_name);
         }
+        AppMode::QualitySelect { .. } => {
+            render_channels(f, app, area, border_color, focused, &mode);
+        }
     }
 }
 

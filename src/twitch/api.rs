@@ -2,7 +2,7 @@ use crate::twitch::auth::Auth;
 use crate::twitch::{Channel, Game, Vod};
 use reqwest::Client;
 use serde::Deserialize;
-use tracing::{debug, error, info};
+use tracing::{debug, error};
 
 #[derive(Debug)]
 pub struct TwitchApi {
@@ -12,8 +12,14 @@ pub struct TwitchApi {
 }
 
 #[derive(Deserialize)]
-struct StreamsResponse {
-    data: Vec<StreamData>,
+struct PaginatedResponse<T> {
+    data: Vec<T>,
+    pagination: Option<Pagination>,
+}
+
+#[derive(Deserialize)]
+struct Pagination {
+    cursor: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -27,11 +33,8 @@ struct StreamData {
     viewer_count: u32,
     started_at: String,
     thumbnail_url: String,
-}
-
-#[derive(Deserialize)]
-struct GamesResponse {
-    data: Vec<GameData>,
+    #[serde(default)]
+    tags: Vec<String>,
 }
 
 #[derive(Deserialize)]
@@ -51,14 +54,13 @@ struct SearchChannelsResponse {
 #[allow(dead_code)]
 struct SearchChannelData {
     id: String,
-    login: String,
+    broadcaster_login: String,
     display_name: String,
     is_live: bool,
-}
-
-#[derive(Deserialize)]
-struct VideosResponse {
-    data: Vec<VideoData>,
+    title: Option<String>,
+    game_name: Option<String>,
+    thumbnail_url: Option<String>,
+    started_at: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -101,13 +103,16 @@ impl TwitchApi {
         Ok(headers)
     }
 
-    pub async fn get_streams(&self, user_logins: &[String]) -> Result<Vec<Channel>, String> {
+    pub async fn get_streams(&self, user_logins: &[String], after: Option<&str>) -> Result<(Vec<Channel>, Option<String>), String> {
         let headers = self.build_headers().map_err(|e| { error!("build_headers error: {}", e); e })?;
         let params: Vec<String> = user_logins
             .iter()
             .map(|l| format!("user_login={}", l))
             .collect();
-        let url = format!("{}/streams?{}", self.base_url, params.join("&"));
+        let mut url = format!("{}/streams?{}", self.base_url, params.join("&"));
+        if let Some(cursor) = after {
+            url = format!("{}&after={}", url, cursor);
+        }
 
         let resp = self
             .client
@@ -127,10 +132,11 @@ impl TwitchApi {
 
         let raw = resp.text().await.map_err(|e| format!("Read body error: {}", e))?;
         debug!("get_streams response body (first 500 chars): {}", &raw[..500.min(raw.len())]);
-        let data: StreamsResponse = serde_json::from_str(&raw)
+        let data: PaginatedResponse<StreamData> = serde_json::from_str(&raw)
             .map_err(|e| { error!("Parse error in get_streams: {}", e); format!("Parse error: {}", e) })?;
 
-        Ok(data
+        let cursor = data.pagination.and_then(|p| p.cursor);
+        let channels = data
             .data
             .into_iter()
             .map(|s| Channel {
@@ -147,13 +153,18 @@ impl TwitchApi {
                 viewer_count: Some(s.viewer_count),
                 started_at: Some(s.started_at),
                 thumbnail_url: Some(s.thumbnail_url),
+                tags: s.tags,
             })
-            .collect())
+            .collect();
+        Ok((channels, cursor))
     }
 
-    pub async fn get_top_games(&self, first: u32) -> Result<Vec<Game>, String> {
+    pub async fn get_top_games(&self, first: u32, after: Option<&str>) -> Result<(Vec<Game>, Option<String>), String> {
         let headers = self.build_headers()?;
-        let url = format!("{}/games/top?first={}", self.base_url, first);
+        let mut url = format!("{}/games/top?first={}", self.base_url, first);
+        if let Some(cursor) = after {
+            url = format!("{}&after={}", url, cursor);
+        }
 
         let resp = self
             .client
@@ -163,12 +174,13 @@ impl TwitchApi {
             .await
             .map_err(|e| format!("Network error: {}", e))?;
 
-        let data: GamesResponse = resp
+        let data: PaginatedResponse<GameData> = resp
             .json()
             .await
             .map_err(|e| format!("Parse error: {}", e))?;
 
-        Ok(data
+        let cursor = data.pagination.and_then(|p| p.cursor);
+        let games = data
             .data
             .into_iter()
             .map(|g| Game {
@@ -176,19 +188,24 @@ impl TwitchApi {
                 name: g.name,
                 box_art_url: g.box_art_url,
             })
-            .collect())
+            .collect();
+        Ok((games, cursor))
     }
 
     pub async fn get_streams_by_game(
         &self,
         game_id: &str,
         first: u32,
-    ) -> Result<Vec<Channel>, String> {
+        after: Option<&str>,
+    ) -> Result<(Vec<Channel>, Option<String>), String> {
         let headers = self.build_headers()?;
-        let url = format!(
+        let mut url = format!(
             "{}/streams?game_id={}&first={}",
             self.base_url, game_id, first
         );
+        if let Some(cursor) = after {
+            url = format!("{}&after={}", url, cursor);
+        }
 
         let resp = self
             .client
@@ -198,12 +215,13 @@ impl TwitchApi {
             .await
             .map_err(|e| format!("Network error: {}", e))?;
 
-        let data: StreamsResponse = resp
+        let data: PaginatedResponse<StreamData> = resp
             .json()
             .await
             .map_err(|e| format!("Parse error: {}", e))?;
 
-        Ok(data
+        let cursor = data.pagination.and_then(|p| p.cursor);
+        let channels = data
             .data
             .into_iter()
             .map(|s| Channel {
@@ -220,8 +238,10 @@ impl TwitchApi {
                 viewer_count: Some(s.viewer_count),
                 started_at: Some(s.started_at),
                 thumbnail_url: Some(s.thumbnail_url),
+                tags: s.tags,
             })
-            .collect())
+            .collect();
+        Ok((channels, cursor))
     }
 
     pub async fn search_channels(
@@ -253,24 +273,28 @@ impl TwitchApi {
             .into_iter()
             .map(|c| Channel {
                 twitch_id: c.id,
-                name: c.login,
+                name: c.broadcaster_login,
                 display_name: c.display_name,
                 is_live: c.is_live,
-                title: None,
-                game_name: None,
+                title: c.title,
+                game_name: c.game_name,
                 viewer_count: None,
-                started_at: None,
-                thumbnail_url: None,
+                started_at: c.started_at,
+                thumbnail_url: c.thumbnail_url,
+                tags: Vec::new(),
             })
             .collect())
     }
 
-    pub async fn get_vods(&self, user_id: &str, first: u32) -> Result<Vec<Vod>, String> {
+    pub async fn get_vods(&self, user_id: &str, first: u32, after: Option<&str>) -> Result<(Vec<Vod>, Option<String>), String> {
         let headers = self.build_headers()?;
-        let url = format!(
+        let mut url = format!(
             "{}/videos?user_id={}&first={}",
             self.base_url, user_id, first
         );
+        if let Some(cursor) = after {
+            url = format!("{}&after={}", url, cursor);
+        }
 
         let resp = self
             .client
@@ -280,12 +304,13 @@ impl TwitchApi {
             .await
             .map_err(|e| format!("Network error: {}", e))?;
 
-        let data: VideosResponse = resp
+        let data: PaginatedResponse<VideoData> = resp
             .json()
             .await
             .map_err(|e| format!("Parse error: {}", e))?;
 
-        Ok(data
+        let cursor = data.pagination.and_then(|p| p.cursor);
+        let vods = data
             .data
             .into_iter()
             .map(|v| Vod {
@@ -296,7 +321,8 @@ impl TwitchApi {
                 thumbnail_url: v.thumbnail_url,
                 user_name: v.user_name,
             })
-            .collect())
+            .collect();
+        Ok((vods, cursor))
     }
 
     pub async fn get_followed_channels(&self, user_id: &str) -> Result<Vec<Channel>, String> {
@@ -348,6 +374,7 @@ impl TwitchApi {
                 viewer_count: None,
                 started_at: None,
                 thumbnail_url: None,
+                tags: Vec::new(),
             })
             .collect())
     }
