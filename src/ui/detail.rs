@@ -1,7 +1,7 @@
 use crate::app::App;
 use ratatui::{
     layout::Rect,
-    style::{Modifier, Style},
+    style::Style,
     widgets::{Block, Borders, Paragraph, Wrap},
     Frame,
 };

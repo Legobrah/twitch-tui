@@ -1,7 +1,7 @@
 use crate::app::{App, FocusTarget};
 use ratatui::{
     layout::{Constraint, Direction, Layout, Rect},
-    style::{Modifier, Style},
+    style::Style,
     widgets::{Block, Borders, List, ListItem, Paragraph},
     Frame,
 };

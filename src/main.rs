@@ -1,3 +1,4 @@
+#![allow(dead_code)]
 mod app;
 mod config;
 mod db;
@@ -231,18 +232,18 @@ fn handle_key(
                 spawn_search(auth, tx, &q);
                 return;
             }
+            KeyCode::Up => {
+                app.select_prev();
+                return;
+            }
+            KeyCode::Down => {
+                app.select_next();
+                return;
+            }
             KeyCode::Char(c) => {
                 query.push(c);
                 let q = query.clone();
                 spawn_search(auth, tx, &q);
-                return;
-            }
-            KeyCode::Up | KeyCode::Char('k') => {
-                app.select_prev();
-                return;
-            }
-            KeyCode::Down | KeyCode::Char('j') => {
-                app.select_next();
                 return;
             }
             KeyCode::Tab => {
