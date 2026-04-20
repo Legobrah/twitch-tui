@@ -4,6 +4,7 @@ mod config;
 mod db;
 mod notify;
 mod player;
+mod thumb;
 mod twitch;
 mod ui;
 
@@ -58,6 +59,19 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let auth = twitch::auth::Auth::from_config(&config);
     info!("Auth: has_token={}, username={:?}", auth.has_token(), auth.username);
 
+    // Try to detect terminal image protocol before we take over the terminal.
+    // On failure (non-TTY, unsupported terminal) we fall back to halfblocks.
+    let picker = match ratatui_image::picker::Picker::from_query_stdio() {
+        Ok(p) => {
+            info!("Image picker: {:?} font_size={:?}", p.protocol_type(), p.font_size());
+            Some(p)
+        }
+        Err(e) => {
+            warn!("Image protocol detection failed ({}), thumbnails disabled", e);
+            None
+        }
+    };
+
     let db = Db::open()?;
     let saved_channels = db.get_saved_channels()?;
     info!("DB opened, {} saved channels: {:?}", saved_channels.len(),
@@ -72,6 +86,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     info!("Terminal initialized");
 
     let mut app = App::new(saved_channels);
+    app.username = auth.username.clone().filter(|s| !s.is_empty());
+    app.has_oauth = auth.has_token();
+    app.picker = picker;
     let (tx, mut rx) = mpsc::unbounded_channel::<AppEvent>();
 
     // Background: poll saved channels for live status
@@ -141,6 +158,7 @@ fn run_app(
     let mut irc_client: Option<twitch::irc::IrcClient> = None;
     let mut current_chat_channel: Option<String> = None;
 
+    let mut last_spin = std::time::Instant::now();
     loop {
         terminal.draw(|f| ui::render(f, app))?;
 
@@ -150,6 +168,11 @@ fn run_app(
                     handle_key(key, app, db, config, auth, tx, &mut irc_client, &mut current_chat_channel);
                 }
             }
+        }
+
+        if app.is_loading && last_spin.elapsed().as_millis() >= 80 {
+            app.spinner_frame = app.spinner_frame.wrapping_add(1);
+            last_spin = std::time::Instant::now();
         }
 
         while let Ok(evt) = rx.try_recv() {
@@ -163,6 +186,7 @@ fn run_app(
                     }
                     app.pagination_cursor = cursor;
                     app.is_loading = false;
+                    app.clamp_selection();
                 }
                 AppEvent::CategoriesLoaded(games, cursor) => {
                     info!("AppEvent::CategoriesLoaded({} games)", games.len());
@@ -173,6 +197,7 @@ fn run_app(
                     }
                     app.pagination_cursor = cursor;
                     app.is_loading = false;
+                    app.clamp_selection();
                 }
                 AppEvent::CategoryStreamsLoaded(streams, cursor) => {
                     info!("AppEvent::CategoryStreamsLoaded({} streams)", streams.len());
@@ -183,6 +208,7 @@ fn run_app(
                     }
                     app.pagination_cursor = cursor;
                     app.is_loading = false;
+                    app.clamp_selection();
                 }
                 AppEvent::SearchResults(results, cursor) => {
                     info!("AppEvent::SearchResults({} results)", results.len());
@@ -193,6 +219,7 @@ fn run_app(
                     }
                     app.pagination_cursor = cursor;
                     app.is_loading = false;
+                    app.clamp_selection();
                 }
                 AppEvent::VodsLoaded(vods, cursor) => {
                     info!("AppEvent::VodsLoaded({} vods)", vods.len());
@@ -203,6 +230,7 @@ fn run_app(
                     }
                     app.pagination_cursor = cursor;
                     app.is_loading = false;
+                    app.clamp_selection();
                 }
                 AppEvent::ChatMessage(msg) => {
                     debug!("Chat: {} ({} chars)", msg.sender, msg.message.len());
@@ -219,12 +247,39 @@ fn run_app(
                         system: true,
                     });
                 }
+                AppEvent::ThumbnailReady(key, img) => {
+                    if let Some(picker) = app.picker.as_ref() {
+                        let proto = thumb::build_protocol(picker, img);
+                        app.thumb_cache.insert(key, proto);
+                    }
+                }
                 AppEvent::Error(e) => {
                     error!("AppEvent::Error: {}", e);
                     app.error_message = Some(e);
                     app.error_time = Some(std::time::Instant::now());
                 }
                 AppEvent::Tick => {}
+            }
+        }
+
+        // Trigger debounced thumbnail fetch when the current selection changes
+        // to a live channel whose image isn't cached yet.
+        if app.picker.is_some() {
+            let desired = app.selected_channel().and_then(|c| {
+                thumb::cache_key(c).map(|k| (k, c.thumbnail_url.clone().unwrap_or_default()))
+            });
+            match desired {
+                Some((key, url)) => {
+                    if app.last_thumb_key.as_deref() != Some(key.as_str()) {
+                        app.last_thumb_key = Some(key.clone());
+                        if !app.thumb_cache.contains(&key) && !url.is_empty() {
+                            thumb::spawn_fetch(app.thumb_seq.clone(), tx.clone(), key, url);
+                        }
+                    }
+                }
+                None => {
+                    app.last_thumb_key = None;
+                }
             }
         }
 
@@ -254,8 +309,16 @@ fn handle_key(
     current_chat_channel: &mut Option<String>,
 ) {
     if app.show_help {
-        if key.code == KeyCode::Char('?') || key.code == KeyCode::Esc {
-            app.show_help = false;
+        let max = ui::help::total_lines().saturating_sub(1);
+        match key.code {
+            KeyCode::Char('?') | KeyCode::Esc | KeyCode::Char('q') => app.show_help = false,
+            KeyCode::Char('j') | KeyCode::Down => {
+                app.help_scroll = (app.help_scroll + 1).min(max);
+            }
+            KeyCode::Char('k') | KeyCode::Up => app.help_scroll = app.help_scroll.saturating_sub(1),
+            KeyCode::Char('g') => app.help_scroll = 0,
+            KeyCode::Char('G') => app.help_scroll = max,
+            _ => {}
         }
         return;
     }
@@ -308,6 +371,7 @@ fn handle_key(
         match key.code {
             KeyCode::Esc => {
                 app.focus = FocusTarget::Browse;
+                app.chat_history_index = None;
                 return;
             }
             KeyCode::Enter => {
@@ -317,15 +381,45 @@ fn handle_key(
                             let msg = app.chat_input.clone();
                             let ch = channel.clone();
                             info!("Sending chat message to {}", ch);
-                            let _ = client.say(ch, msg);
+                            let _ = client.say(ch, msg.clone());
+                            if app.chat_history.last().map(|s| s.as_str()) != Some(msg.as_str()) {
+                                app.chat_history.push(msg);
+                                if app.chat_history.len() > 50 {
+                                    app.chat_history.remove(0);
+                                }
+                            }
                         }
                     }
                     app.chat_input.clear();
+                    app.chat_history_index = None;
                 }
                 return;
             }
             KeyCode::Backspace => {
                 app.chat_input.pop();
+                return;
+            }
+            KeyCode::Up => {
+                if !app.chat_history.is_empty() {
+                    let idx = match app.chat_history_index {
+                        None => app.chat_history.len() - 1,
+                        Some(i) => i.saturating_sub(1),
+                    };
+                    app.chat_history_index = Some(idx);
+                    app.chat_input = app.chat_history[idx].clone();
+                }
+                return;
+            }
+            KeyCode::Down => {
+                if let Some(i) = app.chat_history_index {
+                    if i + 1 < app.chat_history.len() {
+                        app.chat_history_index = Some(i + 1);
+                        app.chat_input = app.chat_history[i + 1].clone();
+                    } else {
+                        app.chat_history_index = None;
+                        app.chat_input.clear();
+                    }
+                }
                 return;
             }
             KeyCode::Char(c) => {
@@ -348,17 +442,27 @@ fn handle_key(
             KeyCode::Enter => {
                 if let Some(ch) = app.selected_channel() {
                     let channel_name = ch.name.clone();
-                    let quality = config.default_quality.clone();
-                    tokio::spawn(async move {
-                        let _ = player::watch_stream(&channel_name, &quality).await;
-                    });
+                    let display_name = ch.display_name.clone();
+                    let chat_channel = channel_name.clone();
+                    info!("Opening quality picker (search) for: {}", channel_name);
+                    app.watching_channel = Some(ch.clone());
+                    let quality_index = app::QUALITY_OPTIONS
+                        .iter()
+                        .position(|q| *q == config.default_quality)
+                        .unwrap_or(0);
+                    app.mode = AppMode::QualitySelect {
+                        channel_name,
+                        channel_display_name: display_name,
+                        quality_index,
+                    };
+                    connect_chat(auth, tx, &chat_channel, irc_client, current_chat_channel, &mut app.chat_messages);
                 }
                 return;
             }
             KeyCode::Backspace => {
                 query.pop();
                 let q = query.clone();
-                spawn_search(auth, tx, &q);
+                spawn_search_debounced(app.search_seq.clone(), auth, tx, &q);
                 return;
             }
             KeyCode::Up => {
@@ -372,7 +476,7 @@ fn handle_key(
             KeyCode::Char(c) => {
                 query.push(c);
                 let q = query.clone();
-                spawn_search(auth, tx, &q);
+                spawn_search_debounced(app.search_seq.clone(), auth, tx, &q);
                 return;
             }
             KeyCode::Tab => {
@@ -399,6 +503,10 @@ fn handle_key(
         }
         KeyCode::Char('j') | KeyCode::Down => app.select_next(),
         KeyCode::Char('k') | KeyCode::Up => app.select_prev(),
+        KeyCode::Char('g') => app.jump_top(),
+        KeyCode::Char('G') => app.jump_bottom(),
+        KeyCode::PageDown => app.page_down(10),
+        KeyCode::PageUp => app.page_up(10),
 
         KeyCode::Enter => handle_enter(app, config, auth, tx, irc_client, current_chat_channel),
 
@@ -454,7 +562,9 @@ fn handle_key(
         }
         KeyCode::Char('r') => {
             info!("Refresh requested");
+            app.pagination_cursor = None;
             app.is_loading = true;
+            refresh_current(app, auth, tx);
         }
 
         KeyCode::Char('n') => {
@@ -463,7 +573,7 @@ fn handle_key(
                 app.is_loading = true;
                 let cursor = app.pagination_cursor.clone();
                 match &app.mode {
-                    AppMode::SavedChannels | AppMode::Followed => {
+                    AppMode::SavedChannels => {
                         let logins: Vec<String> = app.saved_channels.iter().map(|c| c.name.clone()).collect();
                         let auth = auth.clone();
                         let tx = tx.clone();
@@ -474,6 +584,9 @@ fn handle_key(
                                 Err(e) => { let _ = tx.send(AppEvent::Error(format!("{}", e))); }
                             }
                         });
+                    }
+                    AppMode::Followed => {
+                        // Followed doesn't paginate via cursor (single fetch); ignore.
                     }
                     AppMode::Categories => {
                         spawn_categories_page(auth, tx, cursor.as_deref());
@@ -486,12 +599,65 @@ fn handle_key(
                             spawn_vods(auth, tx, &ch.twitch_id, cursor.as_deref());
                         }
                     }
+                    AppMode::Search { query } => {
+                        spawn_search_debounced(app.search_seq.clone(), auth, tx, query);
+                    }
                     _ => {}
                 }
             }
         }
 
         _ => {}
+    }
+}
+
+fn refresh_current(
+    app: &mut App,
+    auth: &twitch::auth::Auth,
+    tx: &mpsc::UnboundedSender<AppEvent>,
+) {
+    match app.mode.clone() {
+        AppMode::SavedChannels => {
+            let logins: Vec<String> = app.saved_channels.iter().map(|c| c.name.clone()).collect();
+            if logins.is_empty() {
+                app.is_loading = false;
+                return;
+            }
+            let auth = auth.clone();
+            let tx = tx.clone();
+            tokio::spawn(async move {
+                let api = twitch::api::TwitchApi::new(auth);
+                match api.get_streams(&logins, None).await {
+                    Ok((channels, c)) => { let _ = tx.send(AppEvent::ChannelsLoaded(channels, c)); }
+                    Err(e) => { let _ = tx.send(AppEvent::Error(format!("{}", e))); }
+                }
+            });
+        }
+        AppMode::Followed => {
+            spawn_followed(auth, tx);
+        }
+        AppMode::Categories => spawn_categories(auth, tx),
+        AppMode::CategoryStreams { game_id, .. } => {
+            spawn_category_streams(auth, tx, &game_id, None);
+        }
+        AppMode::Search { query } => {
+            if !query.is_empty() {
+                spawn_search_debounced(app.search_seq.clone(), auth, tx, &query);
+            } else {
+                app.is_loading = false;
+            }
+        }
+        AppMode::Vods { .. } => {
+            if let Some(ch) = app.selected_channel() {
+                let uid = ch.twitch_id.clone();
+                spawn_vods(auth, tx, &uid, None);
+            } else {
+                app.is_loading = false;
+            }
+        }
+        AppMode::QualitySelect { .. } => {
+            app.is_loading = false;
+        }
     }
 }
 
@@ -526,6 +692,7 @@ fn handle_enter(
                 let channel_display_name = ch.display_name.clone();
                 let chat_channel = channel_name.clone();
                 info!("Opening quality picker for: {}", channel_name);
+                app.watching_channel = Some(ch.clone());
                 let default_quality = &config.default_quality;
                 let quality_index = app::QUALITY_OPTIONS
                     .iter()
@@ -536,7 +703,7 @@ fn handle_enter(
                     channel_display_name,
                     quality_index,
                 };
-                connect_chat(auth, tx, &chat_channel, irc_client, current_chat_channel);
+                connect_chat(auth, tx, &chat_channel, irc_client, current_chat_channel, &mut app.chat_messages);
             }
         }
         AppMode::Vods { .. } => {
@@ -654,11 +821,15 @@ fn spawn_category_streams(
     });
 }
 
-fn spawn_search(
+fn spawn_search_debounced(
+    seq: std::sync::Arc<std::sync::atomic::AtomicU64>,
     auth: &twitch::auth::Auth,
     tx: &mpsc::UnboundedSender<AppEvent>,
     query: &str,
 ) {
+    use std::sync::atomic::Ordering;
+    let my_seq = seq.fetch_add(1, Ordering::SeqCst) + 1;
+
     if query.is_empty() {
         let _ = tx.send(AppEvent::SearchResults(Vec::new(), None));
         return;
@@ -667,10 +838,17 @@ fn spawn_search(
     let tx = tx.clone();
     let q = query.to_string();
     tokio::spawn(async move {
+        tokio::time::sleep(Duration::from_millis(280)).await;
+        if seq.load(Ordering::SeqCst) != my_seq {
+            return;
+        }
         let api = twitch::api::TwitchApi::new(auth);
         debug!("Searching channels: {}", q);
         match api.search_channels(&q, 20).await {
             Ok(results) => {
+                if seq.load(Ordering::SeqCst) != my_seq {
+                    return;
+                }
                 info!("Search '{}' returned {} results", q, results.len());
                 let _ = tx.send(AppEvent::SearchResults(results, None));
             }
@@ -714,15 +892,26 @@ fn connect_chat(
     channel: &str,
     irc_client: &mut Option<twitch::irc::IrcClient>,
     current_chat_channel: &mut Option<String>,
+    chat_messages: &mut Vec<twitch::ChatMessage>,
 ) {
     if current_chat_channel.as_deref() == Some(channel) {
         debug!("Already connected to {}", channel);
         return;
     }
 
+    // Switching channels — clear prior messages and drop the old client.
+    chat_messages.clear();
+    *irc_client = None;
+
     info!("Connecting to chat: {} (authenticated={})", channel, auth.has_token());
-    let result = if let (Some(username), Some(token)) = (&auth.username, &auth.oauth_token) {
-        twitch::irc::connect_authenticated(username, token, channel, tx.clone())
+    let username = auth.username.as_deref().filter(|s| !s.is_empty());
+    let result = if let (Some(username), Some(token)) = (username, &auth.oauth_token) {
+        let irc_token = if token.starts_with("oauth:") {
+            token.clone()
+        } else {
+            format!("oauth:{}", token)
+        };
+        twitch::irc::connect_authenticated(username, &irc_token, channel, tx.clone())
     } else {
         twitch::irc::connect_anonymous(channel, tx.clone())
     };

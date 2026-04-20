@@ -20,3 +20,5 @@ tracing = "0.1"
 tracing-subscriber = "0.3"
 directories = "6"
 clap = { version = "4", features = ["derive"] }
+ratatui-image = "4"
+image = { version = "0.25", default-features = false, features = ["jpeg"] }

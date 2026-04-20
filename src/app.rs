@@ -1,5 +1,10 @@
 use crate::db::SavedChannel;
+use crate::thumb::ThumbnailCache;
 use crate::twitch::{Channel, ChatMessage, Game, Vod};
+use image::DynamicImage;
+use ratatui_image::picker::Picker;
+use std::sync::atomic::AtomicU64;
+use std::sync::Arc;
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum AppMode {
@@ -39,6 +44,7 @@ pub enum AppEvent {
     VodsLoaded(Vec<Vod>, Option<String>),
     ChatMessage(ChatMessage),
     ChatConnected(String),
+    ThumbnailReady(String, DynamicImage),
     Error(String),
     Tick,
 }
@@ -56,13 +62,26 @@ pub struct App {
     pub vods: Vec<Vod>,
     pub chat_messages: Vec<ChatMessage>,
     pub chat_input: String,
+    pub chat_history: Vec<String>,
+    pub chat_history_index: Option<usize>,
     pub selected_index: usize,
     pub show_help: bool,
+    pub help_scroll: u16,
+    pub help_max_scroll: u16,
     pub error_message: Option<String>,
     pub is_loading: bool,
     pub should_quit: bool,
     pub pagination_cursor: Option<String>,
+    pub watching_channel: Option<Channel>,
     pub error_time: Option<std::time::Instant>,
+    pub search_seq: Arc<AtomicU64>,
+    pub username: Option<String>,
+    pub has_oauth: bool,
+    pub spinner_frame: usize,
+    pub picker: Option<Picker>,
+    pub thumb_cache: ThumbnailCache,
+    pub thumb_seq: Arc<AtomicU64>,
+    pub last_thumb_key: Option<String>,
 }
 
 impl App {
@@ -78,14 +97,57 @@ impl App {
             vods: Vec::new(),
             chat_messages: Vec::new(),
             chat_input: String::new(),
+            chat_history: Vec::new(),
+            chat_history_index: None,
             selected_index: 0,
             show_help: false,
+            help_scroll: 0,
+            help_max_scroll: 0,
             error_message: None,
             is_loading: false,
             should_quit: false,
             pagination_cursor: None,
+            watching_channel: None,
             error_time: None,
+            search_seq: Arc::new(AtomicU64::new(0)),
+            username: None,
+            has_oauth: false,
+            spinner_frame: 0,
+            picker: None,
+            thumb_cache: ThumbnailCache::new(),
+            thumb_seq: Arc::new(AtomicU64::new(0)),
+            last_thumb_key: None,
         }
+    }
+
+    pub fn clamp_selection(&mut self) {
+        let len = self.current_list_len();
+        if len == 0 {
+            self.selected_index = 0;
+        } else if self.selected_index >= len {
+            self.selected_index = len - 1;
+        }
+    }
+
+    pub fn jump_top(&mut self) {
+        self.selected_index = 0;
+    }
+
+    pub fn jump_bottom(&mut self) {
+        let len = self.current_list_len();
+        self.selected_index = len.saturating_sub(1);
+    }
+
+    pub fn page_down(&mut self, page: usize) {
+        let len = self.current_list_len();
+        if len == 0 {
+            return;
+        }
+        self.selected_index = (self.selected_index + page).min(len - 1);
+    }
+
+    pub fn page_up(&mut self, page: usize) {
+        self.selected_index = self.selected_index.saturating_sub(page);
     }
 
     pub fn current_channels(&self) -> &[Channel] {
@@ -97,19 +159,30 @@ impl App {
         }
     }
 
+    pub fn current_list_len(&self) -> usize {
+        match &self.mode {
+            AppMode::SavedChannels | AppMode::Followed => self.channels.len(),
+            AppMode::Categories => self.categories.len(),
+            AppMode::CategoryStreams { .. } => self.category_streams.len(),
+            AppMode::Search { .. } => self.search_results.len(),
+            AppMode::Vods { .. } => self.vods.len(),
+            AppMode::QualitySelect { .. } => QUALITY_OPTIONS.len(),
+        }
+    }
+
     pub fn selected_channel(&self) -> Option<&Channel> {
         self.current_channels().get(self.selected_index)
     }
 
     pub fn select_next(&mut self) {
-        let len = self.current_channels().len();
+        let len = self.current_list_len();
         if len > 0 {
             self.selected_index = (self.selected_index + 1) % len;
         }
     }
 
     pub fn select_prev(&mut self) {
-        let len = self.current_channels().len();
+        let len = self.current_list_len();
         if len > 0 {
             self.selected_index = (self.selected_index + len - 1) % len;
         }
@@ -141,17 +214,17 @@ impl App {
 
     pub fn key_hints(&self) -> &str {
         if self.show_help {
-            return "? close help";
+            return "j/k scroll · ? close";
         }
         if let FocusTarget::Chat = self.focus {
-            return "type message · Enter send · Esc back";
+            return "Enter send · ↑/↓ history · Esc back";
         }
         match &self.mode {
-            AppMode::Search { .. } => "type to search · Esc back · Enter watch",
-            AppMode::Categories => "Enter select · Esc back · ? help",
-            AppMode::Vods { .. } => "Enter play · Esc back · ? help",
-            AppMode::QualitySelect { .. } => "j/k choose · Enter select · Esc cancel",
-            _ => "j/k nav · Enter watch · s save · n more · ? help",
+            AppMode::Search { .. } => "type to search · Enter watch · Esc back",
+            AppMode::Categories => "Enter select · r refresh · Esc back",
+            AppMode::Vods { .. } => "Enter play · r refresh · Esc back",
+            AppMode::QualitySelect { .. } => "j/k choose · Enter select · Esc default",
+            _ => "Enter watch · s save · r refresh · n more · ? help",
         }
     }
 }

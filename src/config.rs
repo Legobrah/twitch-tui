@@ -49,6 +49,13 @@ impl Default for TwitchConfig {
     }
 }
 
+impl TwitchConfig {
+    /// Deserialize username, treating empty strings as None.
+    pub fn username(&self) -> Option<&str> {
+        self.username.as_deref().filter(|s| !s.is_empty())
+    }
+}
+
 fn default_poll_interval() -> u64 {
     60
 }

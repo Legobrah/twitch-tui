@@ -19,7 +19,7 @@ pub fn render(f: &mut Frame, app: &mut App) {
     let size = f.area();
 
     // Set terminal background
-    let bg = Block::default().style(Style::default().bg(theme::BG));
+    let bg = Block::default().style(Style::default().bg(theme::SURFACE));
     f.render_widget(bg, size);
 
     let error_height = if app.error_message.is_some() { 1 } else { 0 };
@@ -49,10 +49,10 @@ pub fn render(f: &mut Frame, app: &mut App) {
     }
 
     if app.show_help {
-        help::render(f, main_area);
+        help::render(f, app, main_area);
     }
 
     if let AppMode::QualitySelect { .. } = &app.mode {
-        quality::render(f, app, main_area);
+        quality::render(f, app, chunks[0]);
     }
 }
