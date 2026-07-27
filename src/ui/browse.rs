@@ -1,17 +1,21 @@
+use super::theme;
 use crate::app::{App, AppMode, FocusTarget};
 use crate::ui::format::{format_uptime, format_viewers};
 use ratatui::{
+    Frame,
     layout::Rect,
     style::{Color, Modifier, Style},
     text::{Line, Span},
     widgets::{Block, Borders, List, ListItem, ListState, Paragraph},
-    Frame,
 };
-use super::theme;
 
 use theme::SELECTION_BG;
 
-fn fg_span<'a>(content: impl Into<std::borrow::Cow<'a, str>>, color: Color, selected: bool) -> Span<'a> {
+fn fg_span<'a>(
+    content: impl Into<std::borrow::Cow<'a, str>>,
+    color: Color,
+    selected: bool,
+) -> Span<'a> {
     let mut style = Style::default().fg(color);
     if selected {
         style = style.bg(SELECTION_BG);
@@ -29,9 +33,10 @@ fn styled_item<'a>(line: Line<'a>, selected: bool) -> ListItem<'a> {
 }
 
 fn more_prompt<'a>() -> ListItem<'a> {
-    ListItem::new(Line::from(vec![
-        Span::styled("── press 'n' for more ──", Style::default().fg(theme::DIM_TEXT)),
-    ]))
+    ListItem::new(Line::from(vec![Span::styled(
+        "── press 'n' for more ──",
+        Style::default().fg(theme::DIM_TEXT),
+    )]))
 }
 
 pub fn render(f: &mut Frame, app: &mut App, area: Rect) {
@@ -69,7 +74,7 @@ pub fn render(f: &mut Frame, app: &mut App, area: Rect) {
         AppMode::Search { query } => {
             render_search(f, app, area, border_color, focused, query);
         }
-        AppMode::Vods { channel_name } => {
+        AppMode::Vods { channel_name, .. } => {
             render_vods(f, app, area, border_color, focused, channel_name);
         }
         _ => {}
@@ -83,13 +88,20 @@ fn header_title(mode: &AppMode) -> String {
         AppMode::Categories => "Categories".to_string(),
         AppMode::CategoryStreams { game_name, .. } => game_name.clone(),
         AppMode::Search { query } => format!("Search: {}", query),
-        AppMode::Vods { channel_name } => format!("VODs: {}", channel_name),
+        AppMode::Vods { channel_name, .. } => format!("VODs: {}", channel_name),
         _ => String::new(),
     }
 }
 
 /// Render an empty state with a centered icon and short hints.
-fn render_empty(f: &mut Frame, area: Rect, border_color: Color, title: &str, icon: &str, lines: Vec<Line>) {
+fn render_empty(
+    f: &mut Frame,
+    area: Rect,
+    border_color: Color,
+    title: &str,
+    icon: &str,
+    lines: Vec<Line>,
+) {
     let mut all_lines = vec![
         Line::from(""),
         Line::from(Span::styled(
@@ -121,62 +133,85 @@ fn render_channels(
     focused: bool,
     mode: &AppMode,
 ) {
-    if app.channels.is_empty() {
+    let channels = app.current_channels();
+
+    if channels.is_empty() {
         let (title, icon, lines) = match mode {
             AppMode::SavedChannels => (
                 "Saved Channels",
                 "📡",
                 vec![
-                    Line::from(Span::styled("  No saved channels", Style::default().fg(theme::DIM_TEXT))),
+                    Line::from(Span::styled(
+                        "  No saved channels",
+                        Style::default().fg(theme::DIM_TEXT),
+                    )),
                     Line::from(""),
-                    Line::from(Span::styled("  / search  ·  f following", Style::default().fg(theme::DIM_TEXT))),
+                    Line::from(Span::styled(
+                        "  / search  ·  f following",
+                        Style::default().fg(theme::DIM_TEXT),
+                    )),
                 ],
             ),
             AppMode::Followed => (
                 "Following",
                 "👤",
-                vec![
-                    Line::from(Span::styled("  No followed channels", Style::default().fg(theme::DIM_TEXT))),
-                ],
+                vec![Line::from(Span::styled(
+                    "  No followed channels",
+                    Style::default().fg(theme::DIM_TEXT),
+                ))],
             ),
             _ => (
                 "Channels",
                 "📺",
-                vec![
-                    Line::from(Span::styled("  No channels", Style::default().fg(theme::DIM_TEXT))),
-                ],
+                vec![Line::from(Span::styled(
+                    "  No channels",
+                    Style::default().fg(theme::DIM_TEXT),
+                ))],
             ),
         };
         render_empty(f, area, border_color, title, icon, lines);
         return;
     }
 
-    let live_count = app.channels.iter().filter(|c| c.is_live).count();
-    let total = app.channels.len();
+    let live_count = channels.iter().filter(|c| c.is_live).count();
+    let total = channels.len();
     let header = match mode {
         AppMode::Followed => format!(" Following · {} · {} live ", total, live_count),
         _ => format!(" Saved · {} · {} live ", total, live_count),
     };
 
-    let mut items: Vec<ListItem> = app
-        .channels
+    let mut items: Vec<ListItem> = channels
         .iter()
         .enumerate()
         .map(|(i, ch)| {
             let sel = i == app.selected_index && focused;
             if ch.is_live {
-                let uptime = ch.started_at.as_deref().map(format_uptime).unwrap_or_default();
+                let uptime = ch
+                    .started_at
+                    .as_deref()
+                    .map(format_uptime)
+                    .unwrap_or_default();
                 let game = ch.game_name.as_deref().unwrap_or("");
-                let viewers = ch.viewer_count.map(|v| format_viewers(v)).unwrap_or_default();
+                let viewers = ch.viewer_count.map(format_viewers).unwrap_or_default();
 
                 let name_style = if sel {
-                    Style::default().fg(theme::TEXT).add_modifier(Modifier::BOLD).bg(SELECTION_BG)
+                    Style::default()
+                        .fg(theme::TEXT)
+                        .add_modifier(Modifier::BOLD)
+                        .bg(SELECTION_BG)
                 } else {
                     Style::default().fg(theme::TEXT)
                 };
 
                 let line = Line::from(vec![
-                    Span::styled(theme::LIVE_DOT, Style::default().fg(theme::RED).bg(if sel { SELECTION_BG } else { Color::Reset })),
+                    Span::styled(
+                        theme::LIVE_DOT,
+                        Style::default().fg(theme::RED).bg(if sel {
+                            SELECTION_BG
+                        } else {
+                            Color::Reset
+                        }),
+                    ),
                     Span::raw(" "),
                     Span::styled(ch.display_name.clone(), name_style),
                     sep(),
@@ -189,7 +224,10 @@ fn render_channels(
                 styled_item(line, sel)
             } else {
                 let name_style = if sel {
-                    Style::default().fg(theme::DIM_TEXT).add_modifier(Modifier::BOLD).bg(SELECTION_BG)
+                    Style::default()
+                        .fg(theme::DIM_TEXT)
+                        .add_modifier(Modifier::BOLD)
+                        .bg(SELECTION_BG)
                 } else {
                     Style::default().fg(theme::DIM_TEXT)
                 };
@@ -199,7 +237,14 @@ fn render_channels(
                     .bg(if sel { SELECTION_BG } else { Color::Reset });
 
                 let line = Line::from(vec![
-                    Span::styled(theme::OFFLINE_DOT, Style::default().fg(theme::DIM_TEXT).bg(if sel { SELECTION_BG } else { Color::Reset })),
+                    Span::styled(
+                        theme::OFFLINE_DOT,
+                        Style::default().fg(theme::DIM_TEXT).bg(if sel {
+                            SELECTION_BG
+                        } else {
+                            Color::Reset
+                        }),
+                    ),
                     Span::raw(" "),
                     Span::styled(ch.display_name.clone(), name_style),
                     Span::styled("  offline", offline_style),
@@ -224,23 +269,25 @@ fn render_channels(
         );
 
     let mut state = ListState::default();
-    if focused && !app.channels.is_empty() {
+    if focused && !channels.is_empty() {
         state.select(Some(app.selected_index));
     }
     f.render_stateful_widget(list, area, &mut state);
 }
 
-fn render_categories(
-    f: &mut Frame,
-    app: &mut App,
-    area: Rect,
-    border_color: Color,
-    focused: bool,
-) {
+fn render_categories(f: &mut Frame, app: &mut App, area: Rect, border_color: Color, focused: bool) {
     if app.categories.is_empty() {
-        render_empty(f, area, border_color, "Categories", "🎮", vec![
-            Line::from(Span::styled("  Press c to load", Style::default().fg(theme::DIM_TEXT))),
-        ]);
+        render_empty(
+            f,
+            area,
+            border_color,
+            "Categories",
+            "🎮",
+            vec![Line::from(Span::styled(
+                "  Press c to load",
+                Style::default().fg(theme::DIM_TEXT),
+            ))],
+        );
         return;
     }
 
@@ -251,13 +298,14 @@ fn render_categories(
         .map(|(i, game)| {
             let sel = i == app.selected_index && focused;
             let name_style = if sel {
-                Style::default().fg(theme::TEXT).add_modifier(Modifier::BOLD).bg(SELECTION_BG)
+                Style::default()
+                    .fg(theme::TEXT)
+                    .add_modifier(Modifier::BOLD)
+                    .bg(SELECTION_BG)
             } else {
                 Style::default().fg(theme::TEXT)
             };
-            let line = Line::from(vec![
-                Span::styled(format!(" {}", game.name), name_style),
-            ]);
+            let line = Line::from(vec![Span::styled(format!(" {}", game.name), name_style)]);
             styled_item(line, sel)
         })
         .collect();
@@ -292,9 +340,17 @@ fn render_category_streams(
     game_name: &str,
 ) {
     if app.category_streams.is_empty() {
-        render_empty(f, area, border_color, game_name, "📺", vec![
-            Line::from(Span::styled("  No streams", Style::default().fg(theme::DIM_TEXT))),
-        ]);
+        render_empty(
+            f,
+            area,
+            border_color,
+            game_name,
+            "📺",
+            vec![Line::from(Span::styled(
+                "  No streams",
+                Style::default().fg(theme::DIM_TEXT),
+            ))],
+        );
         return;
     }
 
@@ -304,17 +360,31 @@ fn render_category_streams(
         .enumerate()
         .map(|(i, ch)| {
             let sel = i == app.selected_index && focused;
-            let uptime = ch.started_at.as_deref().map(format_uptime).unwrap_or_default();
-            let viewers = ch.viewer_count.map(|v| format_viewers(v)).unwrap_or_default();
+            let uptime = ch
+                .started_at
+                .as_deref()
+                .map(format_uptime)
+                .unwrap_or_default();
+            let viewers = ch.viewer_count.map(format_viewers).unwrap_or_default();
 
             let name_style = if sel {
-                Style::default().fg(theme::TEXT).add_modifier(Modifier::BOLD).bg(SELECTION_BG)
+                Style::default()
+                    .fg(theme::TEXT)
+                    .add_modifier(Modifier::BOLD)
+                    .bg(SELECTION_BG)
             } else {
                 Style::default().fg(theme::TEXT)
             };
 
             let line = Line::from(vec![
-                Span::styled(theme::LIVE_DOT, Style::default().fg(theme::RED).bg(if sel { SELECTION_BG } else { Color::Reset })),
+                Span::styled(
+                    theme::LIVE_DOT,
+                    Style::default().fg(theme::RED).bg(if sel {
+                        SELECTION_BG
+                    } else {
+                        Color::Reset
+                    }),
+                ),
                 Span::raw(" "),
                 Span::styled(ch.display_name.clone(), name_style),
                 sep(),
@@ -335,7 +405,11 @@ fn render_category_streams(
         .block(
             Block::default()
                 .borders(Borders::ALL)
-                .title(format!(" {} · {} streams ", game_name, app.category_streams.len()))
+                .title(format!(
+                    " {} · {} streams ",
+                    game_name,
+                    app.category_streams.len()
+                ))
                 .border_style(Style::default().fg(border_color))
                 .style(Style::default().bg(theme::SURFACE)),
         );
@@ -356,15 +430,31 @@ fn render_search(
     query: &str,
 ) {
     if app.search_results.is_empty() && !query.is_empty() {
-        render_empty(f, area, border_color, &format!("Search: {}", query), "🔍", vec![
-            Line::from(Span::styled(format!("  No results for \"{}\"", query), Style::default().fg(theme::DIM_TEXT))),
-        ]);
+        render_empty(
+            f,
+            area,
+            border_color,
+            &format!("Search: {}", query),
+            "🔍",
+            vec![Line::from(Span::styled(
+                format!("  No results for \"{}\"", query),
+                Style::default().fg(theme::DIM_TEXT),
+            ))],
+        );
         return;
     }
     if app.search_results.is_empty() {
-        render_empty(f, area, border_color, "Search", "🔍", vec![
-            Line::from(Span::styled("  Type to search channels", Style::default().fg(theme::DIM_TEXT))),
-        ]);
+        render_empty(
+            f,
+            area,
+            border_color,
+            "Search",
+            "🔍",
+            vec![Line::from(Span::styled(
+                "  Type to search channels",
+                Style::default().fg(theme::DIM_TEXT),
+            ))],
+        );
         return;
     }
 
@@ -374,11 +464,22 @@ fn render_search(
         .enumerate()
         .map(|(i, ch)| {
             let sel = i == app.selected_index && focused;
-            let dot_str = if ch.is_live { theme::LIVE_DOT } else { theme::OFFLINE_DOT };
-            let dot_color = if ch.is_live { theme::RED } else { theme::DIM_TEXT };
+            let dot_str = if ch.is_live {
+                theme::LIVE_DOT
+            } else {
+                theme::OFFLINE_DOT
+            };
+            let dot_color = if ch.is_live {
+                theme::RED
+            } else {
+                theme::DIM_TEXT
+            };
 
             let name_style = if sel {
-                Style::default().fg(theme::TEXT).add_modifier(Modifier::BOLD).bg(SELECTION_BG)
+                Style::default()
+                    .fg(theme::TEXT)
+                    .add_modifier(Modifier::BOLD)
+                    .bg(SELECTION_BG)
             } else if ch.is_live {
                 Style::default().fg(theme::TEXT)
             } else {
@@ -386,7 +487,14 @@ fn render_search(
             };
 
             let line = Line::from(vec![
-                Span::styled(dot_str, Style::default().fg(dot_color).bg(if sel { SELECTION_BG } else { Color::Reset })),
+                Span::styled(
+                    dot_str,
+                    Style::default().fg(dot_color).bg(if sel {
+                        SELECTION_BG
+                    } else {
+                        Color::Reset
+                    }),
+                ),
                 Span::raw(" "),
                 Span::styled(ch.display_name.clone(), name_style),
             ]);
@@ -422,9 +530,17 @@ fn render_vods(
     channel_name: &str,
 ) {
     if app.vods.is_empty() {
-        render_empty(f, area, border_color, &format!("VODs: {}", channel_name), "📼", vec![
-            Line::from(Span::styled(format!("  No VODs for {}", channel_name), Style::default().fg(theme::DIM_TEXT))),
-        ]);
+        render_empty(
+            f,
+            area,
+            border_color,
+            &format!("VODs: {}", channel_name),
+            "📼",
+            vec![Line::from(Span::styled(
+                format!("  No VODs for {}", channel_name),
+                Style::default().fg(theme::DIM_TEXT),
+            ))],
+        );
         return;
     }
 
@@ -436,14 +552,24 @@ fn render_vods(
             let sel = i == app.selected_index && focused;
 
             let title_style = if sel {
-                Style::default().fg(theme::TEXT).add_modifier(Modifier::BOLD).bg(SELECTION_BG)
+                Style::default()
+                    .fg(theme::TEXT)
+                    .add_modifier(Modifier::BOLD)
+                    .bg(SELECTION_BG)
             } else {
                 Style::default().fg(theme::TEXT)
             };
 
             let line = Line::from(vec![
                 Span::raw(" "),
-                Span::styled(format!("[{}]", vod.duration), Style::default().fg(theme::GREEN).bg(if sel { SELECTION_BG } else { Color::Reset })),
+                Span::styled(
+                    format!("[{}]", vod.duration),
+                    Style::default().fg(theme::GREEN).bg(if sel {
+                        SELECTION_BG
+                    } else {
+                        Color::Reset
+                    }),
+                ),
                 Span::raw(" "),
                 Span::styled(vod.title.clone(), title_style),
             ]);
@@ -460,7 +586,11 @@ fn render_vods(
         .block(
             Block::default()
                 .borders(Borders::ALL)
-                .title(format!(" VODs: {} · {} videos ", channel_name, app.vods.len()))
+                .title(format!(
+                    " VODs: {} · {} videos ",
+                    channel_name,
+                    app.vods.len()
+                ))
                 .border_style(Style::default().fg(border_color))
                 .style(Style::default().bg(theme::SURFACE)),
         );

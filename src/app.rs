@@ -3,8 +3,8 @@ use crate::thumb::ThumbnailCache;
 use crate::twitch::{Channel, ChatMessage, Game, Vod};
 use image::DynamicImage;
 use ratatui_image::picker::Picker;
-use std::sync::atomic::AtomicU64;
 use std::sync::Arc;
+use std::sync::atomic::AtomicU64;
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum AppMode {
@@ -19,6 +19,7 @@ pub enum AppMode {
     },
     Vods {
         channel_name: String,
+        user_id: String,
     },
     Followed,
     QualitySelect {
@@ -35,9 +36,25 @@ pub enum FocusTarget {
     Chat,
 }
 
+pub fn channel_from_saved(saved: &SavedChannel) -> Channel {
+    Channel {
+        twitch_id: saved.twitch_id.clone(),
+        name: saved.name.clone(),
+        display_name: saved.display_name.clone(),
+        is_live: false,
+        title: None,
+        game_name: None,
+        viewer_count: None,
+        started_at: None,
+        thumbnail_url: None,
+        tags: Vec::new(),
+    }
+}
+
 #[derive(Debug)]
 pub enum AppEvent {
-    ChannelsLoaded(Vec<Channel>, Option<String>),
+    SavedChannelsLoaded(Vec<Channel>),
+    FollowedChannelsLoaded(Vec<Channel>),
     CategoriesLoaded(Vec<Game>, Option<String>),
     CategoryStreamsLoaded(Vec<Channel>, Option<String>),
     SearchResults(Vec<Channel>, Option<String>),
@@ -46,7 +63,6 @@ pub enum AppEvent {
     ChatConnected(String),
     ThumbnailReady(String, DynamicImage),
     Error(String),
-    Tick,
 }
 
 pub const QUALITY_OPTIONS: &[&str] = &["best", "1080p", "720p", "480p", "360p", "audio_only"];
@@ -56,6 +72,7 @@ pub struct App {
     pub focus: FocusTarget,
     pub saved_channels: Vec<SavedChannel>,
     pub channels: Vec<Channel>,
+    pub followed_channels: Vec<Channel>,
     pub categories: Vec<Game>,
     pub category_streams: Vec<Channel>,
     pub search_results: Vec<Channel>,
@@ -86,11 +103,13 @@ pub struct App {
 
 impl App {
     pub fn new(saved_channels: Vec<SavedChannel>) -> Self {
+        let channels = saved_channels.iter().map(channel_from_saved).collect();
         Self {
             mode: AppMode::SavedChannels,
             focus: FocusTarget::Browse,
             saved_channels,
-            channels: Vec::new(),
+            channels,
+            followed_channels: Vec::new(),
             categories: Vec::new(),
             category_streams: Vec::new(),
             search_results: Vec::new(),
@@ -152,7 +171,8 @@ impl App {
 
     pub fn current_channels(&self) -> &[Channel] {
         match &self.mode {
-            AppMode::SavedChannels | AppMode::Followed => &self.channels,
+            AppMode::SavedChannels => &self.channels,
+            AppMode::Followed => &self.followed_channels,
             AppMode::CategoryStreams { .. } => &self.category_streams,
             AppMode::Search { .. } => &self.search_results,
             _ => &self.channels,
@@ -161,7 +181,8 @@ impl App {
 
     pub fn current_list_len(&self) -> usize {
         match &self.mode {
-            AppMode::SavedChannels | AppMode::Followed => self.channels.len(),
+            AppMode::SavedChannels => self.channels.len(),
+            AppMode::Followed => self.followed_channels.len(),
             AppMode::Categories => self.categories.len(),
             AppMode::CategoryStreams { .. } => self.category_streams.len(),
             AppMode::Search { .. } => self.search_results.len(),
@@ -206,7 +227,7 @@ impl App {
             AppMode::Categories => "Categories",
             AppMode::CategoryStreams { game_name, .. } => game_name,
             AppMode::Search { .. } => "Search",
-            AppMode::Vods { channel_name } => channel_name,
+            AppMode::Vods { channel_name, .. } => channel_name,
             AppMode::Followed => "Following",
             AppMode::QualitySelect { .. } => "Quality",
         }
@@ -226,5 +247,50 @@ impl App {
             AppMode::QualitySelect { .. } => "j/k choose · Enter select · Esc default",
             _ => "Enter watch · s save · r refresh · n more · ? help",
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn saved_channel() -> SavedChannel {
+        SavedChannel {
+            id: 1,
+            twitch_id: "123".to_string(),
+            name: "shroud".to_string(),
+            display_name: "shroud".to_string(),
+        }
+    }
+
+    #[test]
+    fn saved_channels_are_visible_as_offline_channels_on_startup() {
+        let app = App::new(vec![saved_channel()]);
+        assert_eq!(app.channels.len(), 1);
+        assert_eq!(app.channels[0].name, "shroud");
+        assert!(!app.channels[0].is_live);
+    }
+
+    #[test]
+    fn followed_channels_have_separate_list_state() {
+        let mut app = App::new(vec![saved_channel()]);
+        app.followed_channels.push(Channel {
+            twitch_id: "456".to_string(),
+            name: "pokimane".to_string(),
+            display_name: "Pokimane".to_string(),
+            is_live: false,
+            title: None,
+            game_name: None,
+            viewer_count: None,
+            started_at: None,
+            thumbnail_url: None,
+            tags: Vec::new(),
+        });
+
+        app.mode = AppMode::SavedChannels;
+        assert_eq!(app.current_channels()[0].name, "shroud");
+
+        app.mode = AppMode::Followed;
+        assert_eq!(app.current_channels()[0].name, "pokimane");
     }
 }

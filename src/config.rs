@@ -17,7 +17,7 @@ pub struct Config {
     pub chat_enabled: bool,
 }
 
-#[derive(Debug, Clone, Deserialize, Serialize)]
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
 pub struct TwitchConfig {
     #[serde(default)]
     pub client_id: String,
@@ -39,16 +39,6 @@ impl Default for Config {
     }
 }
 
-impl Default for TwitchConfig {
-    fn default() -> Self {
-        Self {
-            client_id: String::new(),
-            oauth_token: None,
-            username: None,
-        }
-    }
-}
-
 impl TwitchConfig {
     /// Deserialize username, treating empty strings as None.
     pub fn username(&self) -> Option<&str> {
@@ -64,6 +54,27 @@ fn default_quality() -> String {
 }
 fn default_true() -> bool {
     true
+}
+
+fn merge_toml_tables(dst: &mut toml::value::Table, src: toml::value::Table) {
+    for (key, value) in src {
+        match (dst.get_mut(&key), value) {
+            (Some(toml::Value::Table(dst_table)), toml::Value::Table(src_table)) => {
+                merge_toml_tables(dst_table, src_table);
+            }
+            (_, value) => {
+                dst.insert(key, value);
+            }
+        }
+    }
+}
+
+fn remove_twitch_key(value: &mut toml::Value, key: &str) {
+    if let toml::Value::Table(root) = value
+        && let Some(toml::Value::Table(twitch)) = root.get_mut("twitch")
+    {
+        twitch.remove(key);
+    }
 }
 
 impl Config {
@@ -102,7 +113,29 @@ impl Config {
         if let Some(parent) = path.parent() {
             fs::create_dir_all(parent)?;
         }
-        let content = toml::to_string_pretty(self)?;
+
+        let mut value = if path.exists() {
+            toml::from_str::<toml::Value>(&fs::read_to_string(path)?)?
+        } else {
+            toml::Value::Table(toml::value::Table::new())
+        };
+        let new_value = toml::Value::try_from(self)?;
+        match (&mut value, new_value) {
+            (toml::Value::Table(existing), toml::Value::Table(new_table)) => {
+                merge_toml_tables(existing, new_table);
+            }
+            (existing, new_value) => {
+                *existing = new_value;
+            }
+        }
+        if self.twitch.oauth_token.is_none() {
+            remove_twitch_key(&mut value, "oauth_token");
+        }
+        if self.twitch.username.is_none() {
+            remove_twitch_key(&mut value, "username");
+        }
+
+        let content = toml::to_string_pretty(&value)?;
         fs::write(path, content)?;
         #[cfg(unix)]
         {
@@ -150,5 +183,48 @@ mod tests {
         assert_eq!(parsed.poll_interval_secs, 30);
         assert_eq!(parsed.default_quality, "720p");
         assert!(!parsed.notifications_enabled);
+    }
+
+    #[test]
+    fn test_save_preserves_unknown_keys() {
+        let dir =
+            std::env::temp_dir().join(format!("twitch-tui-config-test-{}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("config.toml");
+        fs::write(
+            &path,
+            r#"
+poll_interval_secs = 5
+unknown_top_level = "keep"
+
+[twitch]
+client_id = "old"
+custom_twitch_key = "keep"
+oauth_token = "remove-me"
+"#,
+        )
+        .unwrap();
+
+        let config = Config {
+            twitch: TwitchConfig {
+                client_id: "new".to_string(),
+                oauth_token: None,
+                username: Some("devind".to_string()),
+            },
+            poll_interval_secs: 30,
+            default_quality: "720p".to_string(),
+            notifications_enabled: false,
+            chat_enabled: false,
+        };
+        config.save_to(&path).unwrap();
+
+        let value: toml::Value = toml::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
+        assert_eq!(value["unknown_top_level"].as_str(), Some("keep"));
+        assert_eq!(value["twitch"]["custom_twitch_key"].as_str(), Some("keep"));
+        assert_eq!(value["twitch"]["client_id"].as_str(), Some("new"));
+        assert!(value["twitch"].get("oauth_token").is_none());
+        assert_eq!(value["twitch"]["username"].as_str(), Some("devind"));
+        let _ = fs::remove_file(path);
+        let _ = fs::remove_dir(dir);
     }
 }

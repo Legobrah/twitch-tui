@@ -1,5 +1,5 @@
 use directories::ProjectDirs;
-use rusqlite::{params, Connection, Result};
+use rusqlite::{Connection, Result, params};
 use std::path::PathBuf;
 
 #[derive(Debug, Clone)]
@@ -18,7 +18,8 @@ impl Db {
     pub fn open() -> Result<Self> {
         let path = Self::db_path();
         if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent).ok();
+            std::fs::create_dir_all(parent)
+                .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?;
         }
         let conn = Connection::open(&path)?;
         #[cfg(unix)]
@@ -91,9 +92,9 @@ impl Db {
     }
 
     pub fn get_saved_channels(&self) -> Result<Vec<SavedChannel>> {
-        let mut stmt = self.conn.prepare(
-            "SELECT id, twitch_id, name, display_name FROM channels ORDER BY saved_at",
-        )?;
+        let mut stmt = self
+            .conn
+            .prepare("SELECT id, twitch_id, name, display_name FROM channels ORDER BY saved_at")?;
         let channels = stmt
             .query_map([], |row| {
                 Ok(SavedChannel {
@@ -117,15 +118,15 @@ impl Db {
     }
 
     pub fn get_setting(&self, key: &str) -> Result<Option<String>> {
-        let result = self
-            .conn
-            .query_row(
-                "SELECT value FROM settings WHERE key = ?1",
-                params![key],
-                |row| row.get(0),
-            )
-            .ok();
-        Ok(result)
+        match self.conn.query_row(
+            "SELECT value FROM settings WHERE key = ?1",
+            params![key],
+            |row| row.get(0),
+        ) {
+            Ok(value) => Ok(Some(value)),
+            Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
+            Err(e) => Err(e),
+        }
     }
 
     pub fn set_setting(&self, key: &str, value: &str) -> Result<()> {

@@ -1,52 +1,67 @@
+use super::theme;
 use crate::app::App;
 use ratatui::{
+    Frame,
     layout::{Margin, Rect},
     style::{Modifier, Style},
     text::{Line, Span},
     widgets::{Block, Borders, Clear, Paragraph, Wrap},
-    Frame,
 };
-use super::theme;
 
 pub fn total_lines() -> u16 {
     help_lines().len() as u16
 }
 
 const HELP_SECTIONS: &[(&str, &[(&str, &str)])] = &[
-    ("Navigation", &[
-        ("Tab / Shift+Tab", "Switch pane"),
-        ("j/k, ↑/↓", "Move by one"),
-        ("PgDn / PgUp", "Move by ten"),
-        ("g / G", "Jump top / bottom"),
-        ("n", "Load next page"),
-        ("Esc", "Back"),
-    ]),
-    ("Actions", &[
-        ("Enter", "Watch stream"),
-        ("s", "Save / unsave"),
-        ("/", "Search"),
-        ("c", "Categories"),
-        ("v", "VODs for selected"),
-        ("f", "Following (OAuth)"),
-        ("r", "Refresh current view"),
-        ("q", "Quit"),
-    ]),
-    ("Chat", &[
-        ("Tab", "Focus chat"),
-        ("type + Enter", "Send message"),
-        ("↑ / ↓", "Recall prior message"),
-        ("Esc", "Back to browse"),
-    ]),
-    ("Quality", &[
-        ("j/k, ↑/↓", "Select quality"),
-        ("Enter", "Confirm"),
-        ("Esc", "Default quality"),
-    ]),
-    ("Help overlay", &[
-        ("j/k, ↑/↓", "Scroll"),
-        ("g / G", "Top / bottom"),
-        ("? / Esc / q", "Close"),
-    ]),
+    (
+        "Navigation",
+        &[
+            ("Tab / Shift+Tab", "Switch pane"),
+            ("j/k, ↑/↓", "Move by one"),
+            ("PgDn / PgUp", "Move by ten"),
+            ("g / G", "Jump top / bottom"),
+            ("n", "Load next page"),
+            ("Esc", "Back"),
+        ],
+    ),
+    (
+        "Actions",
+        &[
+            ("Enter", "Watch stream"),
+            ("s", "Save / unsave"),
+            ("/", "Search"),
+            ("c", "Categories"),
+            ("v", "VODs for selected"),
+            ("f", "Following (OAuth)"),
+            ("r", "Refresh current view"),
+            ("q", "Quit"),
+        ],
+    ),
+    (
+        "Chat",
+        &[
+            ("Tab", "Focus chat"),
+            ("type + Enter", "Send message"),
+            ("↑ / ↓", "Recall prior message"),
+            ("Esc", "Back to browse"),
+        ],
+    ),
+    (
+        "Quality",
+        &[
+            ("j/k, ↑/↓", "Select quality"),
+            ("Enter", "Confirm"),
+            ("Esc", "Default quality"),
+        ],
+    ),
+    (
+        "Help overlay",
+        &[
+            ("j/k, ↑/↓", "Scroll"),
+            ("g / G", "Top / bottom"),
+            ("? / Esc / q", "Close"),
+        ],
+    ),
 ];
 
 fn help_lines() -> Vec<Line<'static>> {
@@ -58,11 +73,16 @@ fn help_lines() -> Vec<Line<'static>> {
         }
         lines.push(Line::from(Span::styled(
             section.to_string(),
-            Style::default().fg(theme::CYAN).add_modifier(Modifier::BOLD),
+            Style::default()
+                .fg(theme::CYAN)
+                .add_modifier(Modifier::BOLD),
         )));
         for (key, desc) in *bindings {
             lines.push(Line::from(vec![
-                Span::styled(format!("  {:<16}", key), Style::default().fg(theme::DIM_TEXT)),
+                Span::styled(
+                    format!("  {:<16}", key),
+                    Style::default().fg(theme::DIM_TEXT),
+                ),
                 Span::styled(*desc, Style::default().fg(theme::TEXT)),
             ]));
         }
@@ -87,7 +107,10 @@ pub fn render(f: &mut Frame, app: &App, area: Rect) {
     let block = Block::default()
         .borders(Borders::ALL)
         .title(" Help ")
-        .title_bottom(Span::styled(" j/k scroll · ? or Esc close ", Style::default().fg(theme::DIM_TEXT)))
+        .title_bottom(Span::styled(
+            " j/k scroll · ? or Esc close ",
+            Style::default().fg(theme::DIM_TEXT),
+        ))
         .style(Style::default().fg(theme::CYAN).bg(theme::SURFACE));
     let para = Paragraph::new(help_lines())
         .block(block)

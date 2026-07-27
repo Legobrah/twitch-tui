@@ -1,15 +1,18 @@
 use crate::app::AppEvent;
 use crate::twitch::ChatMessage;
 use tokio::sync::mpsc;
-use twitch_irc::login::StaticLoginCredentials;
-use twitch_irc::message::ServerMessage;
 use twitch_irc::ClientConfig;
 use twitch_irc::SecureTCPTransport;
 use twitch_irc::TwitchIRCClient;
+use twitch_irc::login::StaticLoginCredentials;
+use twitch_irc::message::ServerMessage;
 
 pub type IrcClient = TwitchIRCClient<SecureTCPTransport, StaticLoginCredentials>;
 
-fn spawn_reader(mut incoming: mpsc::UnboundedReceiver<ServerMessage>, tx: mpsc::UnboundedSender<AppEvent>) {
+fn spawn_reader(
+    mut incoming: mpsc::UnboundedReceiver<ServerMessage>,
+    tx: mpsc::UnboundedSender<AppEvent>,
+) {
     tokio::spawn(async move {
         while let Some(msg) = incoming.recv().await {
             if let ServerMessage::Privmsg(pm) = msg {

@@ -69,22 +69,21 @@ mod tests {
 
     #[test]
     fn test_format_uptime_minutes() {
-        let five_min_ago = (chrono::Utc::now() - chrono::Duration::minutes(5))
-            .to_rfc3339();
+        let five_min_ago = (chrono::Utc::now() - chrono::Duration::minutes(5)).to_rfc3339();
         assert_eq!(format_uptime(&five_min_ago), "5m");
     }
 
     #[test]
     fn test_format_uptime_hours_minutes() {
-        let two_hours_ago = (chrono::Utc::now() - chrono::Duration::hours(2) - chrono::Duration::minutes(15))
-            .to_rfc3339();
+        let two_hours_ago =
+            (chrono::Utc::now() - chrono::Duration::hours(2) - chrono::Duration::minutes(15))
+                .to_rfc3339();
         assert_eq!(format_uptime(&two_hours_ago), "2h 15m");
     }
 
     #[test]
     fn test_format_uptime_days() {
-        let one_day_ago = (chrono::Utc::now() - chrono::Duration::hours(27))
-            .to_rfc3339();
+        let one_day_ago = (chrono::Utc::now() - chrono::Duration::hours(27)).to_rfc3339();
         assert_eq!(format_uptime(&one_day_ago), "1d 3h");
     }
 

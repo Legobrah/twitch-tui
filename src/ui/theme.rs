@@ -13,13 +13,30 @@ pub const SELECTION_BG: Color = Color::Rgb(15, 20, 40);
 pub const STATUS_BG: Color = Color::Rgb(10, 14, 30);
 pub const MENTION_BG: Color = Color::Rgb(40, 24, 16);
 pub const MENTION_FG: Color = Color::Rgb(250, 179, 135);
+pub const SEPARATOR: Color = Color::Rgb(60, 66, 86);
+
+pub const CHAT_COLORS: &[Color] = &[
+    CYAN,
+    GREEN,
+    RED,
+    YELLOW,
+    Color::Rgb(203, 166, 247),
+    Color::Rgb(137, 180, 250),
+    Color::Rgb(245, 194, 231),
+    Color::Rgb(148, 226, 213),
+    MENTION_FG,
+    GREEN,
+    Color::Rgb(180, 190, 254),
+    Color::Rgb(245, 224, 220),
+];
+
+pub const TAG_COLORS: &[Color] = &[CYAN, GREEN, RED, YELLOW];
 
 pub const LIVE_DOT: &str = "\u{25cf}";
 pub const OFFLINE_DOT: &str = "\u{25cb}";
 pub const POINTER: &str = "\u{25b8}";
 
 pub const SPINNER_FRAMES: &[&str] = &[
-    "\u{280b}", "\u{2819}", "\u{2839}", "\u{2838}",
-    "\u{283c}", "\u{2834}", "\u{2826}", "\u{2827}",
+    "\u{280b}", "\u{2819}", "\u{2839}", "\u{2838}", "\u{283c}", "\u{2834}", "\u{2826}", "\u{2827}",
     "\u{2807}", "\u{280f}",
 ];

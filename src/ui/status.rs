@@ -1,12 +1,12 @@
+use super::theme;
 use crate::app::App;
 use ratatui::{
+    Frame,
     layout::Rect,
     style::{Modifier, Style},
     text::{Line, Span},
     widgets::Paragraph,
-    Frame,
 };
-use super::theme;
 
 pub fn render(f: &mut Frame, app: &App, area: Rect) {
     let bg = theme::STATUS_BG;
@@ -35,7 +35,10 @@ pub fn render(f: &mut Frame, app: &App, area: Rect) {
     let left = vec![
         Span::styled(
             format!(" {} ", app.mode_label()),
-            Style::default().fg(theme::CYAN).add_modifier(Modifier::BOLD).bg(bg),
+            Style::default()
+                .fg(theme::CYAN)
+                .add_modifier(Modifier::BOLD)
+                .bg(bg),
         ),
         sep.clone(),
         Span::styled(
@@ -45,8 +48,14 @@ pub fn render(f: &mut Frame, app: &App, area: Rect) {
     ];
 
     let right = vec![
-        Span::styled(format!("{} ", auth_dot), Style::default().fg(auth_color).bg(bg)),
-        Span::styled(format!("{} ", auth_text), Style::default().fg(auth_color).bg(bg)),
+        Span::styled(
+            format!("{} ", auth_dot),
+            Style::default().fg(auth_color).bg(bg),
+        ),
+        Span::styled(
+            format!("{} ", auth_text),
+            Style::default().fg(auth_color).bg(bg),
+        ),
     ];
 
     let left_width: usize = left.iter().map(|s| s.width()).sum::<usize>()
@@ -60,10 +69,7 @@ pub fn render(f: &mut Frame, app: &App, area: Rect) {
     if let Some(sp) = loading_span {
         spans.push(sp);
     }
-    spans.push(Span::styled(
-        " ".repeat(pad),
-        Style::default().bg(bg),
-    ));
+    spans.push(Span::styled(" ".repeat(pad), Style::default().bg(bg)));
     spans.extend(right);
 
     let line = Line::from(spans);

@@ -15,7 +15,7 @@ use crossterm::{
     event::{self, Event, KeyCode, KeyEvent, KeyEventKind},
     terminal::{EnterAlternateScreen, LeaveAlternateScreen},
 };
-use ratatui::{backend::CrosstermBackend, Terminal};
+use ratatui::{Terminal, backend::CrosstermBackend};
 use tokio::sync::mpsc;
 use tracing::{debug, error, info, warn};
 
@@ -51,31 +51,50 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let config = Config::load()?;
     info!("Config loaded from {:?}", Config::config_dir());
-    debug!("Config: client_id={}, has_token={}, poll_interval={}",
+    debug!(
+        "Config: client_id={}, has_token={}, poll_interval={}",
         &config.twitch.client_id[..8.min(config.twitch.client_id.len())],
         config.twitch.oauth_token.is_some(),
-        config.poll_interval_secs);
+        config.poll_interval_secs
+    );
 
     let auth = twitch::auth::Auth::from_config(&config);
-    info!("Auth: has_token={}, username={:?}", auth.has_token(), auth.username);
+    info!(
+        "Auth: has_token={}, username={:?}",
+        auth.has_token(),
+        auth.username
+    );
 
     // Try to detect terminal image protocol before we take over the terminal.
     // On failure (non-TTY, unsupported terminal) we fall back to halfblocks.
     let picker = match ratatui_image::picker::Picker::from_query_stdio() {
         Ok(p) => {
-            info!("Image picker: {:?} font_size={:?}", p.protocol_type(), p.font_size());
+            info!(
+                "Image picker: {:?} font_size={:?}",
+                p.protocol_type(),
+                p.font_size()
+            );
             Some(p)
         }
         Err(e) => {
-            warn!("Image protocol detection failed ({}), thumbnails disabled", e);
+            warn!(
+                "Image protocol detection failed ({}), thumbnails disabled",
+                e
+            );
             None
         }
     };
 
     let db = Db::open()?;
     let saved_channels = db.get_saved_channels()?;
-    info!("DB opened, {} saved channels: {:?}", saved_channels.len(),
-        saved_channels.iter().map(|c| c.name.clone()).collect::<Vec<_>>());
+    info!(
+        "DB opened, {} saved channels: {:?}",
+        saved_channels.len(),
+        saved_channels
+            .iter()
+            .map(|c| c.name.clone())
+            .collect::<Vec<_>>()
+    );
 
     // Terminal setup
     crossterm::terminal::enable_raw_mode()?;
@@ -96,8 +115,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let poll_logins: Vec<String> = app.saved_channels.iter().map(|c| c.name.clone()).collect();
     let auth_clone = auth.clone();
     let poll_secs = config.poll_interval_secs;
+    let notifications_enabled = config.notifications_enabled;
     if !poll_logins.is_empty() {
-        info!("Starting background poller for {} channels", poll_logins.len());
+        info!(
+            "Starting background poller for {} channels",
+            poll_logins.len()
+        );
         tokio::spawn(async move {
             let api = twitch::api::TwitchApi::new(auth_clone);
             let mut previously_live: Vec<String> = Vec::new();
@@ -109,7 +132,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         let now_live: Vec<String> =
                             channels.iter().map(|c| c.name.clone()).collect();
                         for ch in &channels {
-                            if !previously_live.contains(&ch.name) {
+                            if notifications_enabled && !previously_live.contains(&ch.name) {
                                 let title = format!("{} is LIVE", ch.display_name);
                                 let body = match (&ch.game_name, &ch.title) {
                                     (Some(g), Some(t)) => format!("{} - {}", g, t),
@@ -121,7 +144,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                             }
                         }
                         previously_live = now_live;
-                        let _ = tx_poll.send(AppEvent::ChannelsLoaded(channels, None));
+                        let _ = tx_poll.send(AppEvent::SavedChannelsLoaded(channels));
                     }
                     Err(e) => {
                         error!("Poll error: {}", e);
@@ -146,6 +169,30 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     result
 }
 
+struct ChatRuntime<'a> {
+    client: &'a mut Option<twitch::irc::IrcClient>,
+    current_channel: &'a mut Option<String>,
+}
+
+fn merge_saved_channels(
+    saved_channels: &[db::SavedChannel],
+    live_channels: Vec<twitch::Channel>,
+) -> Vec<twitch::Channel> {
+    let mut merged: Vec<twitch::Channel> =
+        saved_channels.iter().map(app::channel_from_saved).collect();
+
+    for channel in &mut merged {
+        if let Some(live) = live_channels
+            .iter()
+            .find(|live| live.name.eq_ignore_ascii_case(&channel.name))
+        {
+            *channel = live.clone();
+        }
+    }
+
+    merged
+}
+
 fn run_app(
     terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
     app: &mut App,
@@ -162,12 +209,15 @@ fn run_app(
     loop {
         terminal.draw(|f| ui::render(f, app))?;
 
-        if crossterm::event::poll(Duration::from_millis(100))? {
-            if let Event::Key(key) = event::read()? {
-                if key.kind == KeyEventKind::Press {
-                    handle_key(key, app, db, config, auth, tx, &mut irc_client, &mut current_chat_channel);
-                }
-            }
+        if crossterm::event::poll(Duration::from_millis(100))?
+            && let Event::Key(key) = event::read()?
+            && key.kind == KeyEventKind::Press
+        {
+            let mut chat = ChatRuntime {
+                client: &mut irc_client,
+                current_channel: &mut current_chat_channel,
+            };
+            handle_key(key, app, db, config, auth, tx, &mut chat);
         }
 
         if app.is_loading && last_spin.elapsed().as_millis() >= 80 {
@@ -177,16 +227,29 @@ fn run_app(
 
         while let Ok(evt) = rx.try_recv() {
             match evt {
-                AppEvent::ChannelsLoaded(channels, cursor) => {
-                    info!("AppEvent::ChannelsLoaded({} channels)", channels.len());
-                    if app.pagination_cursor.is_some() {
-                        app.channels.extend(channels);
-                    } else {
-                        app.channels = channels;
+                AppEvent::SavedChannelsLoaded(live_channels) => {
+                    info!(
+                        "AppEvent::SavedChannelsLoaded({} live channels)",
+                        live_channels.len()
+                    );
+                    app.channels = merge_saved_channels(&app.saved_channels, live_channels);
+                    if matches!(app.mode, AppMode::SavedChannels) {
+                        app.pagination_cursor = None;
+                        app.is_loading = false;
+                        app.clamp_selection();
                     }
-                    app.pagination_cursor = cursor;
-                    app.is_loading = false;
-                    app.clamp_selection();
+                }
+                AppEvent::FollowedChannelsLoaded(channels) => {
+                    info!(
+                        "AppEvent::FollowedChannelsLoaded({} channels)",
+                        channels.len()
+                    );
+                    app.followed_channels = channels;
+                    if matches!(app.mode, AppMode::Followed) {
+                        app.pagination_cursor = None;
+                        app.is_loading = false;
+                        app.clamp_selection();
+                    }
                 }
                 AppEvent::CategoriesLoaded(games, cursor) => {
                     info!("AppEvent::CategoriesLoaded({} games)", games.len());
@@ -258,7 +321,6 @@ fn run_app(
                     app.error_message = Some(e);
                     app.error_time = Some(std::time::Instant::now());
                 }
-                AppEvent::Tick => {}
             }
         }
 
@@ -284,11 +346,11 @@ fn run_app(
         }
 
         // Auto-dismiss errors after 5 seconds
-        if let Some(t) = app.error_time {
-            if t.elapsed().as_secs() >= 5 {
-                app.error_message = None;
-                app.error_time = None;
-            }
+        if let Some(t) = app.error_time
+            && t.elapsed().as_secs() >= 5
+        {
+            app.error_message = None;
+            app.error_time = None;
         }
 
         if app.should_quit {
@@ -305,8 +367,7 @@ fn handle_key(
     config: &Config,
     auth: &twitch::auth::Auth,
     tx: &mpsc::UnboundedSender<AppEvent>,
-    irc_client: &mut Option<twitch::irc::IrcClient>,
-    current_chat_channel: &mut Option<String>,
+    chat: &mut ChatRuntime<'_>,
 ) {
     if app.show_help {
         let max = ui::help::total_lines().saturating_sub(1);
@@ -324,7 +385,12 @@ fn handle_key(
     }
 
     // Quality picker mode
-    if let AppMode::QualitySelect { quality_index, channel_name, channel_display_name: _ } = &mut app.mode {
+    if let AppMode::QualitySelect {
+        quality_index,
+        channel_name,
+        channel_display_name: _,
+    } = &mut app.mode
+    {
         match key.code {
             KeyCode::Esc => {
                 let cn = channel_name.clone();
@@ -376,17 +442,24 @@ fn handle_key(
             }
             KeyCode::Enter => {
                 if !app.chat_input.is_empty() {
-                    if let Some(client) = irc_client {
-                        if let Some(channel) = current_chat_channel.as_ref() {
-                            let msg = app.chat_input.clone();
-                            let ch = channel.clone();
-                            info!("Sending chat message to {}", ch);
-                            let _ = client.say(ch, msg.clone());
-                            if app.chat_history.last().map(|s| s.as_str()) != Some(msg.as_str()) {
-                                app.chat_history.push(msg);
-                                if app.chat_history.len() > 50 {
-                                    app.chat_history.remove(0);
-                                }
+                    if let Some(client) = chat.client.as_ref()
+                        && let Some(channel) = chat.current_channel.as_ref()
+                    {
+                        let msg = app.chat_input.clone();
+                        let history_msg = msg.clone();
+                        let ch = channel.clone();
+                        let client = client.clone();
+                        info!("Sending chat message to {}", ch);
+                        tokio::spawn(async move {
+                            if let Err(e) = client.say(ch, msg).await {
+                                tracing::error!("Chat send error: {}", e);
+                            }
+                        });
+                        if app.chat_history.last().map(|s| s.as_str()) != Some(history_msg.as_str())
+                        {
+                            app.chat_history.push(history_msg);
+                            if app.chat_history.len() > 50 {
+                                app.chat_history.remove(0);
                             }
                         }
                     }
@@ -455,7 +528,16 @@ fn handle_key(
                         channel_display_name: display_name,
                         quality_index,
                     };
-                    connect_chat(auth, tx, &chat_channel, irc_client, current_chat_channel, &mut app.chat_messages);
+                    if config.chat_enabled {
+                        connect_chat(
+                            auth,
+                            tx,
+                            &chat_channel,
+                            chat.client,
+                            chat.current_channel,
+                            &mut app.chat_messages,
+                        );
+                    }
                 }
                 return;
             }
@@ -508,7 +590,7 @@ fn handle_key(
         KeyCode::PageDown => app.page_down(10),
         KeyCode::PageUp => app.page_up(10),
 
-        KeyCode::Enter => handle_enter(app, config, auth, tx, irc_client, current_chat_channel),
+        KeyCode::Enter => handle_enter(app, config, auth, tx, chat),
 
         KeyCode::Char('s') => handle_save(app, db),
 
@@ -530,7 +612,9 @@ fn handle_key(
                 spawn_followed(auth, tx);
             } else {
                 warn!("No OAuth token for followed channels");
-                app.error_message = Some("OAuth required. Set token in ~/.config/twitch-tui/config.toml".to_string());
+                app.error_message = Some(
+                    "OAuth required. Set token in ~/.config/twitch-tui/config.toml".to_string(),
+                );
                 app.error_time = Some(std::time::Instant::now());
             }
         }
@@ -548,7 +632,10 @@ fn handle_key(
                 let channel_name = ch.display_name.clone();
                 let user_id = ch.twitch_id.clone();
                 info!("Fetching VODs for {} ({})", channel_name, user_id);
-                app.mode = AppMode::Vods { channel_name };
+                app.mode = AppMode::Vods {
+                    channel_name,
+                    user_id: user_id.clone(),
+                };
                 app.pagination_cursor = None;
                 app.reset_selection();
                 app.is_loading = true;
@@ -567,42 +654,28 @@ fn handle_key(
             refresh_current(app, auth, tx);
         }
 
-        KeyCode::Char('n') => {
-            if app.pagination_cursor.is_some() {
-                info!("Loading next page");
-                app.is_loading = true;
-                let cursor = app.pagination_cursor.clone();
-                match &app.mode {
-                    AppMode::SavedChannels => {
-                        let logins: Vec<String> = app.saved_channels.iter().map(|c| c.name.clone()).collect();
-                        let auth = auth.clone();
-                        let tx = tx.clone();
-                        tokio::spawn(async move {
-                            let api = twitch::api::TwitchApi::new(auth);
-                            match api.get_streams(&logins, cursor.as_deref()).await {
-                                Ok((channels, c)) => { let _ = tx.send(AppEvent::ChannelsLoaded(channels, c)); }
-                                Err(e) => { let _ = tx.send(AppEvent::Error(format!("{}", e))); }
-                            }
-                        });
-                    }
-                    AppMode::Followed => {
-                        // Followed doesn't paginate via cursor (single fetch); ignore.
-                    }
-                    AppMode::Categories => {
-                        spawn_categories_page(auth, tx, cursor.as_deref());
-                    }
-                    AppMode::CategoryStreams { game_id, .. } => {
-                        spawn_category_streams(auth, tx, game_id, cursor.as_deref());
-                    }
-                    AppMode::Vods { .. } => {
-                        if let Some(ch) = app.selected_channel() {
-                            spawn_vods(auth, tx, &ch.twitch_id, cursor.as_deref());
-                        }
-                    }
-                    AppMode::Search { query } => {
-                        spawn_search_debounced(app.search_seq.clone(), auth, tx, query);
-                    }
-                    _ => {}
+        KeyCode::Char('n') if app.pagination_cursor.is_some() => {
+            info!("Loading next page");
+            app.is_loading = true;
+            let cursor = app.pagination_cursor.clone();
+            match &app.mode {
+                AppMode::SavedChannels | AppMode::Followed => {
+                    app.is_loading = false;
+                }
+                AppMode::Categories => {
+                    spawn_categories_page(auth, tx, cursor.as_deref());
+                }
+                AppMode::CategoryStreams { game_id, .. } => {
+                    spawn_category_streams(auth, tx, game_id, cursor.as_deref());
+                }
+                AppMode::Vods { user_id, .. } => {
+                    spawn_vods(auth, tx, user_id, cursor.as_deref());
+                }
+                AppMode::Search { query } => {
+                    spawn_search_debounced(app.search_seq.clone(), auth, tx, query);
+                }
+                _ => {
+                    app.is_loading = false;
                 }
             }
         }
@@ -611,11 +684,7 @@ fn handle_key(
     }
 }
 
-fn refresh_current(
-    app: &mut App,
-    auth: &twitch::auth::Auth,
-    tx: &mpsc::UnboundedSender<AppEvent>,
-) {
+fn refresh_current(app: &mut App, auth: &twitch::auth::Auth, tx: &mpsc::UnboundedSender<AppEvent>) {
     match app.mode.clone() {
         AppMode::SavedChannels => {
             let logins: Vec<String> = app.saved_channels.iter().map(|c| c.name.clone()).collect();
@@ -628,8 +697,12 @@ fn refresh_current(
             tokio::spawn(async move {
                 let api = twitch::api::TwitchApi::new(auth);
                 match api.get_streams(&logins, None).await {
-                    Ok((channels, c)) => { let _ = tx.send(AppEvent::ChannelsLoaded(channels, c)); }
-                    Err(e) => { let _ = tx.send(AppEvent::Error(format!("{}", e))); }
+                    Ok((channels, _cursor)) => {
+                        let _ = tx.send(AppEvent::SavedChannelsLoaded(channels));
+                    }
+                    Err(e) => {
+                        let _ = tx.send(AppEvent::Error(e));
+                    }
                 }
             });
         }
@@ -647,13 +720,8 @@ fn refresh_current(
                 app.is_loading = false;
             }
         }
-        AppMode::Vods { .. } => {
-            if let Some(ch) = app.selected_channel() {
-                let uid = ch.twitch_id.clone();
-                spawn_vods(auth, tx, &uid, None);
-            } else {
-                app.is_loading = false;
-            }
+        AppMode::Vods { user_id, .. } => {
+            spawn_vods(auth, tx, &user_id, None);
         }
         AppMode::QualitySelect { .. } => {
             app.is_loading = false;
@@ -666,8 +734,7 @@ fn handle_enter(
     config: &Config,
     auth: &twitch::auth::Auth,
     tx: &mpsc::UnboundedSender<AppEvent>,
-    irc_client: &mut Option<twitch::irc::IrcClient>,
-    current_chat_channel: &mut Option<String>,
+    chat: &mut ChatRuntime<'_>,
 ) {
     match &app.mode {
         AppMode::Categories => {
@@ -703,7 +770,16 @@ fn handle_enter(
                     channel_display_name,
                     quality_index,
                 };
-                connect_chat(auth, tx, &chat_channel, irc_client, current_chat_channel, &mut app.chat_messages);
+                if config.chat_enabled {
+                    connect_chat(
+                        auth,
+                        tx,
+                        &chat_channel,
+                        chat.client,
+                        chat.current_channel,
+                        &mut app.chat_messages,
+                    );
+                }
             }
         }
         AppMode::Vods { .. } => {
@@ -724,6 +800,7 @@ fn handle_enter(
 
 fn handle_save(app: &mut App, db: &Db) {
     if let Some(ch) = app.selected_channel() {
+        let selected_channel = ch.clone();
         let twitch_id = ch.twitch_id.clone();
         let name = ch.name.clone();
         let display_name = ch.display_name.clone();
@@ -733,17 +810,21 @@ fn handle_save(app: &mut App, db: &Db) {
                 info!("Removing saved channel: {}", name);
                 if db.remove_channel(&twitch_id).is_ok() {
                     app.saved_channels.retain(|c| c.twitch_id != twitch_id);
+                    app.channels.retain(|c| c.twitch_id != twitch_id);
+                    app.clamp_selection();
                 }
             }
             Ok(false) => {
                 info!("Saving channel: {}", name);
                 if db.save_channel(&twitch_id, &name, &display_name).is_ok() {
-                    app.saved_channels.push(db::SavedChannel {
+                    let saved = db::SavedChannel {
                         id: 0,
                         twitch_id,
                         name,
                         display_name,
-                    });
+                    };
+                    app.channels.push(selected_channel);
+                    app.saved_channels.push(saved);
                 }
             }
             Err(e) => {
@@ -781,10 +862,10 @@ fn spawn_categories_page(
 ) {
     let auth = auth.clone();
     let tx = tx.clone();
-    let c = after.unwrap_or_default().to_string();
+    let after = after.map(str::to_string);
     tokio::spawn(async move {
         let api = twitch::api::TwitchApi::new(auth);
-        match api.get_top_games(20, Some(&c)).await {
+        match api.get_top_games(20, after.as_deref()).await {
             Ok((games, cursor)) => {
                 let _ = tx.send(AppEvent::CategoriesLoaded(games, cursor));
             }
@@ -903,7 +984,11 @@ fn connect_chat(
     chat_messages.clear();
     *irc_client = None;
 
-    info!("Connecting to chat: {} (authenticated={})", channel, auth.has_token());
+    info!(
+        "Connecting to chat: {} (authenticated={})",
+        channel,
+        auth.has_token()
+    );
     let username = auth.username.as_deref().filter(|s| !s.is_empty());
     let result = if let (Some(username), Some(token)) = (username, &auth.oauth_token) {
         let irc_token = if token.starts_with("oauth:") {
@@ -949,7 +1034,9 @@ fn spawn_followed(auth: &twitch::auth::Auth, tx: &mpsc::UnboundedSender<AppEvent
                                     info!("{} followed channels are live", live.len());
                                     let mut merged = channels;
                                     for ch in &mut merged {
-                                        if let Some(live_ch) = live.iter().find(|l| l.name == ch.name) {
+                                        if let Some(live_ch) =
+                                            live.iter().find(|l| l.name == ch.name)
+                                        {
                                             ch.is_live = true;
                                             ch.title = live_ch.title.clone();
                                             ch.game_name = live_ch.game_name.clone();
@@ -957,16 +1044,19 @@ fn spawn_followed(auth: &twitch::auth::Auth, tx: &mpsc::UnboundedSender<AppEvent
                                             ch.started_at = live_ch.started_at.clone();
                                         }
                                     }
-                                    let _ = tx.send(AppEvent::ChannelsLoaded(merged, None));
+                                    let _ = tx.send(AppEvent::FollowedChannelsLoaded(merged));
                                 }
                                 Err(e) => {
                                     error!("Followed live check error: {}", e);
-                                    let _ = tx.send(AppEvent::Error(format!("Followed live check: {}", e)));
-                                    let _ = tx.send(AppEvent::ChannelsLoaded(channels, None));
+                                    let _ = tx.send(AppEvent::Error(format!(
+                                        "Followed live check: {}",
+                                        e
+                                    )));
+                                    let _ = tx.send(AppEvent::FollowedChannelsLoaded(channels));
                                 }
                             }
                         } else {
-                            let _ = tx.send(AppEvent::ChannelsLoaded(channels, None));
+                            let _ = tx.send(AppEvent::FollowedChannelsLoaded(channels));
                         }
                     }
                     Err(e) => {

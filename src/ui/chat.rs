@@ -1,31 +1,18 @@
+use super::theme;
 use crate::app::{App, FocusTarget};
 use ratatui::{
+    Frame,
     layout::{Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
     widgets::{Block, Borders, List, ListItem, ListState, Paragraph},
-    Frame,
 };
-use super::theme;
-
-const CHAT_COLORS: &[Color] = &[
-    Color::Rgb(0, 212, 255),
-    Color::Rgb(166, 227, 161),
-    Color::Rgb(243, 139, 168),
-    Color::Rgb(249, 226, 175),
-    Color::Rgb(203, 166, 247),
-    Color::Rgb(137, 180, 250),
-    Color::Rgb(245, 194, 231),
-    Color::Rgb(148, 226, 213),
-    Color::Rgb(250, 179, 135),
-    Color::Rgb(166, 227, 161),
-    Color::Rgb(180, 190, 254),
-    Color::Rgb(245, 224, 220),
-];
 
 fn username_color(name: &str) -> Color {
-    let hash = name.bytes().fold(0u32, |acc, b| acc.wrapping_mul(31).wrapping_add(b as u32));
-    CHAT_COLORS[(hash as usize) % CHAT_COLORS.len()]
+    let hash = name
+        .bytes()
+        .fold(0u32, |acc, b| acc.wrapping_mul(31).wrapping_add(b as u32));
+    theme::CHAT_COLORS[(hash as usize) % theme::CHAT_COLORS.len()]
 }
 
 fn user_badge(name: &str) -> Option<&'static str> {
@@ -37,7 +24,17 @@ fn user_badge(name: &str) -> Option<&'static str> {
 
 /// Estimate display width of a string (treating CJK as 2-wide).
 fn display_width(s: &str) -> usize {
-    s.chars().map(|c| if c.is_control() { 0 } else if c as u32 > 0x2E80 { 2 } else { 1 }).sum()
+    s.chars()
+        .map(|c| {
+            if c.is_control() {
+                0
+            } else if c as u32 > 0x2E80 {
+                2
+            } else {
+                1
+            }
+        })
+        .sum()
 }
 
 /// Build wrapped Lines for a chat message.
@@ -58,10 +55,16 @@ fn wrap_message<'a>(
     if first_width == 0 || max_width < 10 {
         let mut spans: Vec<Span> = Vec::new();
         if let Some(b) = badge {
-            spans.push(Span::styled(format!("[{}] ", b), Style::default().fg(theme::RED).add_modifier(Modifier::BOLD)));
+            spans.push(Span::styled(
+                format!("[{}] ", b),
+                Style::default().fg(theme::RED).add_modifier(Modifier::BOLD),
+            ));
         }
-        spans.push(Span::styled(sender, Style::default().fg(color).add_modifier(Modifier::BOLD)));
-        spans.push(Span::styled(": ", Style::default().fg(Color::Rgb(60, 66, 86))));
+        spans.push(Span::styled(
+            sender,
+            Style::default().fg(color).add_modifier(Modifier::BOLD),
+        ));
+        spans.push(Span::styled(": ", Style::default().fg(theme::SEPARATOR)));
         spans.push(Span::styled(message, Style::default().fg(theme::TEXT)));
         return vec![Line::from(spans)];
     }
@@ -101,15 +104,24 @@ fn wrap_message<'a>(
         if i == 0 {
             let mut spans: Vec<Span> = Vec::new();
             if let Some(b) = badge {
-                spans.push(Span::styled(format!("[{}] ", b), Style::default().fg(theme::RED).add_modifier(Modifier::BOLD)));
+                spans.push(Span::styled(
+                    format!("[{}] ", b),
+                    Style::default().fg(theme::RED).add_modifier(Modifier::BOLD),
+                ));
             }
-            spans.push(Span::styled(sender, Style::default().fg(color).add_modifier(Modifier::BOLD)));
-            spans.push(Span::styled(": ", Style::default().fg(Color::Rgb(60, 66, 86))));
+            spans.push(Span::styled(
+                sender,
+                Style::default().fg(color).add_modifier(Modifier::BOLD),
+            ));
+            spans.push(Span::styled(": ", Style::default().fg(theme::SEPARATOR)));
             spans.push(Span::styled(text, Style::default().fg(theme::TEXT)));
             result.push(Line::from(spans));
         } else {
             // Continuation: no indent, full width
-            result.push(Line::from(Span::styled(text, Style::default().fg(theme::TEXT))));
+            result.push(Line::from(Span::styled(
+                text,
+                Style::default().fg(theme::TEXT),
+            )));
         }
     }
 
@@ -118,7 +130,9 @@ fn wrap_message<'a>(
 
 fn mentions_user(message: &str, username: Option<&str>) -> bool {
     let Some(user) = username else { return false };
-    if user.is_empty() { return false; }
+    if user.is_empty() {
+        return false;
+    }
     let needle = user.to_lowercase();
     let haystack = message.to_lowercase();
     let mut rest = haystack.as_str();
@@ -155,7 +169,9 @@ pub fn render(f: &mut Frame, app: &mut App, area: Rect) {
                     Span::styled(" ◈ ", Style::default().fg(theme::DIM_TEXT)),
                     Span::styled(
                         msg.message.clone(),
-                        Style::default().fg(theme::DIM_TEXT).add_modifier(Modifier::ITALIC),
+                        Style::default()
+                            .fg(theme::DIM_TEXT)
+                            .add_modifier(Modifier::ITALIC),
                     ),
                 ]))
             } else {
@@ -205,13 +221,21 @@ pub fn render(f: &mut Frame, app: &mut App, area: Rect) {
 
     // Input bar
     let cursor = if focused { "▎" } else { "" };
-    let prompt_color = if focused { theme::CYAN } else { theme::DIM_TEXT };
+    let prompt_color = if focused {
+        theme::CYAN
+    } else {
+        theme::DIM_TEXT
+    };
 
     let input_line = Line::from(vec![
         Span::styled("> ", Style::default().fg(prompt_color)),
         Span::styled(
             app.chat_input.clone(),
-            Style::default().fg(if focused { theme::TEXT } else { theme::DIM_TEXT }),
+            Style::default().fg(if focused {
+                theme::TEXT
+            } else {
+                theme::DIM_TEXT
+            }),
         ),
         Span::styled(cursor, Style::default().fg(theme::CYAN)),
     ]);

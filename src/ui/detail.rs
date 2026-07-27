@@ -1,15 +1,15 @@
+use super::theme;
 use crate::app::{App, AppMode};
 use crate::thumb;
 use crate::ui::format::{format_uptime, format_viewers_full};
 use ratatui::{
+    Frame,
     layout::Rect,
     style::{Modifier, Style},
     text::{Line, Span},
     widgets::{Block, Borders, Paragraph, Wrap},
-    Frame,
 };
 use ratatui_image::{FilterType, Resize, StatefulImage};
-use super::theme;
 
 /// Compute an aspect-correct centered rect for a 16:9 thumbnail inside `inner`.
 /// Returns (thumb_rect, remaining_text_rect) or None if the pane is too small.
@@ -54,20 +54,13 @@ fn thumb_and_text_areas(inner: Rect, cell: (u16, u16)) -> Option<(Rect, Rect)> {
     Some((thumb, text))
 }
 
-const TAG_COLORS: &[ratatui::style::Color] = &[
-    ratatui::style::Color::Rgb(0, 212, 255),
-    ratatui::style::Color::Rgb(166, 227, 161),
-    ratatui::style::Color::Rgb(243, 139, 168),
-    ratatui::style::Color::Rgb(249, 226, 175),
-];
-
 pub fn render(f: &mut Frame, app: &mut App, area: Rect) {
-    if let AppMode::QualitySelect { .. } = &app.mode {
-        if let Some(ch) = app.watching_channel.clone() {
-            let key = thumb::cache_key(&ch);
-            render_channel_detail(f, app, &ch, area, true, key.as_deref());
-            return;
-        }
+    if let AppMode::QualitySelect { .. } = &app.mode
+        && let Some(ch) = app.watching_channel.clone()
+    {
+        let key = thumb::cache_key(&ch);
+        render_channel_detail(f, app, &ch, area, true, key.as_deref());
+        return;
     }
 
     if let AppMode::Vods { .. } = &app.mode {
@@ -81,8 +74,14 @@ pub fn render(f: &mut Frame, app: &mut App, area: Rect) {
             let lines = vec![
                 Line::from(""),
                 Line::from(Span::styled("  ℹ", Style::default().fg(theme::CYAN))),
-                Line::from(Span::styled("  Select a channel", Style::default().fg(theme::DIM_TEXT))),
-                Line::from(Span::styled("  to see details", Style::default().fg(theme::DIM_TEXT))),
+                Line::from(Span::styled(
+                    "  Select a channel",
+                    Style::default().fg(theme::DIM_TEXT),
+                )),
+                Line::from(Span::styled(
+                    "  to see details",
+                    Style::default().fg(theme::DIM_TEXT),
+                )),
             ];
             let para = Paragraph::new(lines)
                 .style(Style::default().bg(theme::SURFACE))
@@ -121,7 +120,11 @@ fn render_channel_detail(
 
     // Decide whether to show a thumbnail. Needs: live + cached + picker +
     // enough room in the pane for an aspect-correct image.
-    let cell = app.picker.as_ref().map(|p| p.font_size()).unwrap_or((10, 20));
+    let cell = app
+        .picker
+        .as_ref()
+        .map(|p| p.font_size())
+        .unwrap_or((10, 20));
     let want_thumb = channel.is_live && thumb_key.is_some();
     let areas = if want_thumb {
         thumb_and_text_areas(inner, cell)
@@ -134,24 +137,30 @@ fn render_channel_detail(
         None => (None, inner),
     };
 
-    if let Some(a) = thumb_area {
-        if let Some(p) = thumb_key.and_then(|k| app.thumb_cache.get_mut(k)) {
-            let img = StatefulImage::default().resize(Resize::Fit(Some(FilterType::Triangle)));
-            f.render_stateful_widget(img, a, p);
-        }
+    if let Some(a) = thumb_area
+        && let Some(p) = thumb_key.and_then(|k| app.thumb_cache.get_mut(k))
+    {
+        let img = StatefulImage::default().resize(Resize::Fit(Some(FilterType::Triangle)));
+        f.render_stateful_widget(img, a, p);
     }
 
     let mut lines: Vec<Line> = Vec::new();
 
     // Header
     if channel.is_live {
-        let uptime = channel.started_at.as_deref().map(format_uptime).unwrap_or_default();
+        let uptime = channel
+            .started_at
+            .as_deref()
+            .map(format_uptime)
+            .unwrap_or_default();
         lines.push(Line::from(vec![
             Span::styled(theme::LIVE_DOT.to_string(), Style::default().fg(theme::RED)),
             Span::raw(" "),
             Span::styled(
                 channel.display_name.clone(),
-                Style::default().fg(theme::TEXT).add_modifier(Modifier::BOLD),
+                Style::default()
+                    .fg(theme::TEXT)
+                    .add_modifier(Modifier::BOLD),
             ),
             Span::raw("  "),
             Span::styled(
@@ -161,11 +170,16 @@ fn render_channel_detail(
         ]));
     } else {
         lines.push(Line::from(vec![
-            Span::styled(theme::OFFLINE_DOT.to_string(), Style::default().fg(theme::DIM_TEXT)),
+            Span::styled(
+                theme::OFFLINE_DOT.to_string(),
+                Style::default().fg(theme::DIM_TEXT),
+            ),
             Span::raw(" "),
             Span::styled(
                 channel.display_name.clone(),
-                Style::default().fg(theme::DIM_TEXT).add_modifier(Modifier::BOLD),
+                Style::default()
+                    .fg(theme::DIM_TEXT)
+                    .add_modifier(Modifier::BOLD),
             ),
             Span::raw("  "),
             Span::styled("Offline", Style::default().fg(theme::DIM_TEXT)),
@@ -174,13 +188,21 @@ fn render_channel_detail(
 
     let sep_width = text_area.width.saturating_sub(0) as usize;
     let sep: String = "\u{2501}".repeat(sep_width);
-    lines.push(Line::from(Span::styled(sep, Style::default().fg(theme::BORDER))));
+    lines.push(Line::from(Span::styled(
+        sep,
+        Style::default().fg(theme::BORDER),
+    )));
 
     // Watching indicator
     if watching {
         lines.push(Line::from(vec![
             Span::styled(" ▶ ", Style::default().fg(theme::GREEN)),
-            Span::styled("Now playing", Style::default().fg(theme::GREEN).add_modifier(Modifier::BOLD)),
+            Span::styled(
+                "Now playing",
+                Style::default()
+                    .fg(theme::GREEN)
+                    .add_modifier(Modifier::BOLD),
+            ),
         ]));
         lines.push(Line::from(""));
     }
@@ -218,10 +240,11 @@ fn render_channel_detail(
             .iter()
             .enumerate()
             .flat_map(|(i, tag)| {
-                let color = TAG_COLORS[i % TAG_COLORS.len()];
-                let mut spans = vec![
-                    Span::styled(format!("[{}]", tag), Style::default().fg(color)),
-                ];
+                let color = theme::TAG_COLORS[i % theme::TAG_COLORS.len()];
+                let mut spans = vec![Span::styled(
+                    format!("[{}]", tag),
+                    Style::default().fg(color),
+                )];
                 if i < channel.tags.len() - 1 {
                     spans.push(Span::raw(" "));
                 }
@@ -256,7 +279,10 @@ fn render_vod_detail(f: &mut Frame, app: &mut App, area: Rect) {
             let lines = vec![
                 Line::from(""),
                 Line::from(Span::styled("  📼", Style::default().fg(theme::CYAN))),
-                Line::from(Span::styled("  Select a VOD", Style::default().fg(theme::DIM_TEXT))),
+                Line::from(Span::styled(
+                    "  Select a VOD",
+                    Style::default().fg(theme::DIM_TEXT),
+                )),
             ];
             let para = Paragraph::new(lines)
                 .style(Style::default().bg(theme::SURFACE))
@@ -274,16 +300,19 @@ fn render_vod_detail(f: &mut Frame, app: &mut App, area: Rect) {
 
     let mut lines: Vec<Line> = Vec::new();
 
-    lines.push(Line::from(vec![
-        Span::styled(
-            vod.title.clone(),
-            Style::default().fg(theme::TEXT).add_modifier(Modifier::BOLD),
-        ),
-    ]));
+    lines.push(Line::from(vec![Span::styled(
+        vod.title.clone(),
+        Style::default()
+            .fg(theme::TEXT)
+            .add_modifier(Modifier::BOLD),
+    )]));
 
     let sep_width = area.width.saturating_sub(2) as usize;
     let sep: String = "\u{2501}".repeat(sep_width);
-    lines.push(Line::from(Span::styled(sep, Style::default().fg(theme::BORDER))));
+    lines.push(Line::from(Span::styled(
+        sep,
+        Style::default().fg(theme::BORDER),
+    )));
 
     lines.push(Line::from(vec![
         Span::styled("Duration ", Style::default().fg(theme::DIM_TEXT)),
@@ -311,8 +340,6 @@ fn render_vod_detail(f: &mut Frame, app: &mut App, area: Rect) {
         .title(" VOD Info ")
         .border_style(Style::default().fg(theme::CYAN))
         .style(Style::default().bg(theme::SURFACE));
-    let para = Paragraph::new(lines)
-        .block(block)
-        .wrap(Wrap { trim: true });
+    let para = Paragraph::new(lines).block(block).wrap(Wrap { trim: true });
     f.render_widget(para, area);
 }

@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 use std::collections::VecDeque;
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
 use image::DynamicImage;
@@ -45,14 +45,14 @@ impl ThumbnailCache {
     }
 
     pub fn insert(&mut self, key: String, proto: StatefulProtocol) {
-        if self.entries.contains_key(&key) {
-            self.entries.insert(key, proto);
+        if let Some(existing) = self.entries.get_mut(&key) {
+            *existing = proto;
             return;
         }
-        if self.order.len() >= CACHE_CAPACITY {
-            if let Some(evict) = self.order.pop_front() {
-                self.entries.remove(&evict);
-            }
+        if self.order.len() >= CACHE_CAPACITY
+            && let Some(evict) = self.order.pop_front()
+        {
+            self.entries.remove(&evict);
         }
         self.order.push_back(key.clone());
         self.entries.insert(key, proto);
@@ -136,9 +136,7 @@ pub fn spawn_fetch(
         if seq.load(Ordering::SeqCst) != my_seq {
             return;
         }
-        let img = match tokio::task::spawn_blocking(move || image::load_from_memory(&bytes))
-            .await
-        {
+        let img = match tokio::task::spawn_blocking(move || image::load_from_memory(&bytes)).await {
             Ok(Ok(img)) => img,
             Ok(Err(e)) => {
                 debug!("Thumbnail decode failed: {}", e);

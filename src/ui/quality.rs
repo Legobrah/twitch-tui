@@ -1,15 +1,19 @@
+use super::theme;
 use crate::app::{App, AppMode, QUALITY_OPTIONS};
 use ratatui::{
+    Frame,
     layout::Rect,
     style::{Color, Modifier, Style},
     widgets::{Block, Borders, Clear, List, ListItem, ListState, Paragraph},
-    Frame,
 };
-use super::theme;
 
 pub fn render(f: &mut Frame, app: &App, area: Rect) {
     let (quality_index, channel_display_name) = match &app.mode {
-        AppMode::QualitySelect { quality_index, channel_display_name, .. } => (*quality_index, channel_display_name.clone()),
+        AppMode::QualitySelect {
+            quality_index,
+            channel_display_name,
+            ..
+        } => (*quality_index, channel_display_name.clone()),
         _ => return,
     };
 
@@ -55,7 +59,12 @@ pub fn render(f: &mut Frame, app: &App, area: Rect) {
 
     let hint_y = y + overlay_height;
     if hint_y < area.height {
-        let hint_area = Rect::new(x, hint_y, overlay_width.min(area.width.saturating_sub(x)), 1);
+        let hint_area = Rect::new(
+            x,
+            hint_y,
+            overlay_width.min(area.width.saturating_sub(x)),
+            1,
+        );
         let hint = Paragraph::new(" j/k navigate · Enter select · Esc default")
             .style(Style::default().fg(theme::DIM_TEXT));
         f.render_widget(hint, hint_area);

@@ -7,7 +7,7 @@ Terminal TUI for browsing, watching, and chatting on Twitch streams.
 - Browse saved channels with live status
 - Browse top categories and game streams
 - Search channels
-- Watch streams via streamlink + mpv (ad-free)
+- Watch streams through streamlink and mpv
 - Twitch IRC chat (anonymous or authenticated)
 - VOD browsing and playback
 - Desktop notifications when saved channels go live
@@ -37,15 +37,15 @@ cargo build --release
 Config lives at `~/.config/twitch-tui/config.toml`:
 
 ```toml
-[twitch]
-client_id = "your-twitch-app-client-id"
-oauth_token = "your-oauth-token"
-username = "your-twitch-username"
-
 poll_interval_secs = 60
 default_quality = "best"
 notifications_enabled = true
 chat_enabled = true
+
+[twitch]
+client_id = "your-twitch-app-client-id"
+oauth_token = "your-oauth-token"
+username = "your-twitch-username"
 ```
 
 ### Getting OAuth credentials

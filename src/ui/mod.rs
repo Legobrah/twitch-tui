@@ -9,10 +9,10 @@ pub mod theme;
 
 use crate::app::{App, AppMode};
 use ratatui::{
+    Frame,
     layout::{Constraint, Direction, Layout, Rect},
     style::{Color, Style},
     widgets::{Block, Paragraph},
-    Frame,
 };
 
 pub fn render(f: &mut Frame, app: &mut App) {
@@ -24,7 +24,12 @@ pub fn render(f: &mut Frame, app: &mut App) {
 
     let error_height = if app.error_message.is_some() { 1 } else { 0 };
     let top_height = 1 + error_height;
-    let main_area = Rect::new(size.x, size.y + top_height, size.width, size.height.saturating_sub(top_height));
+    let main_area = Rect::new(
+        size.x,
+        size.y + top_height,
+        size.width,
+        size.height.saturating_sub(top_height),
+    );
     let status_area = Rect::new(size.x, size.y, size.width, 1);
 
     let chunks = Layout::default()
